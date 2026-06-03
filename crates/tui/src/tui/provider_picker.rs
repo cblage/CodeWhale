@@ -482,6 +482,7 @@ mod tests {
                 "Novita AI",
                 "Fireworks AI",
                 "SiliconFlow",
+                "SiliconFlow (China)",
                 "Arcee AI",
                 "Moonshot/Kimi",
                 "SGLang",
@@ -643,7 +644,7 @@ mod tests {
         let config = Config::default();
         let picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
 
-        let rendered = render_text(&picker, 80, 22);
+        let rendered = render_text(&picker, 80, 23);
 
         assert!(rendered.contains("DeepSeek *"));
         assert!(rendered.contains("Ollama"));

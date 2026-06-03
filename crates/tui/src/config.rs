@@ -262,6 +262,7 @@ impl ApiProvider {
             Self::Novita,
             Self::Fireworks,
             Self::Siliconflow,
+            Self::SiliconflowCn,
             Self::Arcee,
             Self::Moonshot,
             Self::Sglang,

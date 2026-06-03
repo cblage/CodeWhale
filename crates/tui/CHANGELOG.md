@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SiliconFlow China region provider.** Added the `siliconflow-CN` provider
   variant for the China regional endpoint, sharing the existing
   `[providers.siliconflow]` credentials and `SILICONFLOW_API_KEY` slot
-  instead of creating a second credential namespace (#2588, #2615).
+  instead of creating a second credential namespace; the provider picker and
+  registry docs now expose the regional route explicitly (#2588, #2615).
 - **Multimodal `/attach` image forwarding.** Attached images are now sent as
   OpenAI-compatible `image_url` content blocks so multimodal providers can
   actually see image attachments (#2584, #2587, #2607).
