@@ -96,7 +96,7 @@ v0.9 branch so the remaining Windows/manual checks are explicit.
 | #2239 i18n Phase 1-4b | Conflicting | Defer until localization lane. |
 | #2242 typed persistent tool permission rules | Conflicting | Compare with #2721 stabilization and permissions model. |
 | #2256 workspace crate consolidation | Conflicting | Do not merge during v0.9 stabilization. |
-| #2269 approval details and shell previews | Conflicting | Review for small UI harvest only. |
+| #2269 approval details and shell previews | Conflicting / locally harvested | Narrow UI slice landed manually: approval cards now show prominent command/dir/file/path/target rows, preserve #2381 intent summaries, classify live shell companion tools as shell, split common shell chains, and show compact simple `printf > file` previews. Do not merge the broader diff-preview/pager rewrite. Close/comment after branch is public, crediting @tdccccc for #1991/#2269. |
 | #2318 message_submit hook transform | Draft/conflicting | Defer; hook behavior must match lifecycle policy. |
 | #2382 v0.8.48 release harvest | Draft/conflicting | Candidate to close as obsolete after confirming no unharvested commits. |
 | #2476 fork migration parent links | Conflicting / already harvested | Patch-equivalent work is already present on `origin/main` and this branch as `b76a11b99` plus follow-up `18550339a`. Close/comment original after the integration branch is public, crediting @cyq1017; close issue #2082 only after confirming the remaining `message_type` wording is obsolete. |

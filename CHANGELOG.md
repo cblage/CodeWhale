@@ -82,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Esc` while editing a queued follow-up restores the original queued message
   instead of cancelling the active turn or silently dropping the queued work
   (#2054).
+- Approval prompts now render prominent command, directory, file, path, or
+  target rows before falling back to raw JSON params. Shell approvals preserve
+  long command tails, split common shell chains for review, and show compact
+  `printf > file` previews while keeping intent summaries visible (#1991,
+  #2269).
 - Sidebar hover details now use row-level metadata for truncated Work, Tasks,
   and Agents rows. Mouse hover opens a bordered, wrapping popover with the full
   underlying row text, long turn/agent ids, and current sub-agent progress
@@ -134,7 +139,9 @@ tool-call transcript collapse/sidebar detail direction (#2738, #2734, #2692,
 #2694), and the HarnessPosture config model for provider/model posture (#2741,
 #2693), and
 **@h3c-hexin** for the tool-agent model inheritance and configured
-`skills_dir` fixes (#2736, #2737). Thanks also to **@qiyuanlicn** for the
+`skills_dir` fixes (#2736, #2737), **@AresNing** for the turn-end observer hook
+work (#2578), and **@tdccccc** for the approval key-detail and shell-preview
+work (#1991, #2269). Thanks also to **@qiyuanlicn** for the
 checkpoint/resume report that shaped the sub-agent recovery slice (#2029),
 **@bevis-wong** for the long-running shell/task liveness report (#1786),
 **@shuxiangxuebiancheng** for the third-party OpenAI-compatible path report

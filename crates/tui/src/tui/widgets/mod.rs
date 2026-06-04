@@ -1270,21 +1270,35 @@ impl Renderable for ApprovalWidget<'_> {
         }
 
         lines.push(Line::from(""));
-        let params_str = self.request.params_display();
-        let params_width = card_area.width.saturating_sub(14) as usize;
-        let params_truncated =
-            crate::utils::truncate_with_ellipsis(&params_str, params_width.max(20), "...");
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                label_params(locale),
-                Style::default().fg(palette::TEXT_HINT),
-            ),
-            Span::styled(
-                params_truncated,
-                Style::default().fg(palette::TEXT_SECONDARY),
-            ),
-        ]));
+        let details = self.request.prominent_detail_items(locale);
+        if details.is_empty() {
+            let params_str = self.request.params_display();
+            let params_width = card_area.width.saturating_sub(14) as usize;
+            let params_truncated =
+                crate::utils::truncate_with_ellipsis(&params_str, params_width.max(20), "...");
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    label_params(locale),
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
+                Span::styled(
+                    params_truncated,
+                    Style::default().fg(palette::TEXT_SECONDARY),
+                ),
+            ]));
+        } else {
+            for detail in details.iter().take(4) {
+                if self.request.category == ToolCategory::Shell
+                    && matches!(detail.label.as_str(), "Command" | "命令")
+                    && let Some(shell_lines) = detail.shell_lines.as_deref()
+                {
+                    push_shell_command_lines(&mut lines, &detail.label, shell_lines);
+                } else {
+                    push_detail_line(&mut lines, &detail.label, &detail.value);
+                }
+            }
+        }
 
         lines.push(Line::from(""));
 
@@ -1504,6 +1518,43 @@ fn label_params(locale: Locale) -> &'static str {
     match locale {
         Locale::ZhHans => "参数：",
         _ => "Params: ",
+    }
+}
+
+fn push_detail_line(lines: &mut Vec<Line<'static>>, label: &str, value: &str) {
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("{label:<7} "),
+            Style::default()
+                .fg(palette::DEEPSEEK_SKY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(value.to_string(), Style::default().fg(palette::TEXT_BODY)),
+    ]));
+}
+
+fn push_shell_command_lines(lines: &mut Vec<Line<'static>>, label: &str, command_lines: &[String]) {
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("{label}:"),
+            Style::default()
+                .fg(palette::DEEPSEEK_SKY)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    for line in command_lines {
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                line.clone(),
+                Style::default()
+                    .fg(palette::TEXT_BODY)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
     }
 }
 
@@ -4023,6 +4074,65 @@ mod tests {
             highlighted_cells >= 4,
             "selected destructive option should render visible blue/white text"
         );
+    }
+
+    #[test]
+    fn approval_shell_command_detects_printf_write_file_preview() {
+        let request = crate::tui::approval::ApprovalRequest::new(
+            "approval-1",
+            "exec_shell",
+            "Run shell command",
+            &serde_json::json!({
+                "command": "printf '%s\\n' 'alpha' 'beta' > src/generated.txt",
+                "cwd": "/tmp/project",
+            }),
+            "exec_shell:printf",
+        );
+        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let widget = ApprovalWidget::new(&request, &view);
+        let area = Rect::new(0, 0, 110, 32);
+        let mut buf = Buffer::empty(area);
+
+        widget.render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+
+        assert!(rendered.contains("Command:"), "{rendered}");
+        assert!(
+            rendered.contains("printf > src/generated.txt"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("alpha"), "{rendered}");
+        assert!(rendered.contains("beta"), "{rendered}");
+        assert!(rendered.contains("Dir"), "{rendered}");
+        assert!(rendered.contains("/tmp/project"), "{rendered}");
+    }
+
+    #[test]
+    fn approval_intent_summary_still_renders_with_shell_details() {
+        let request = crate::tui::approval::ApprovalRequest::new_with_intent(
+            "approval-1",
+            "exec_shell",
+            "Run shell command",
+            &serde_json::json!({
+                "command": "cargo build || echo fallback",
+                "cwd": "/tmp/project",
+            }),
+            "exec_shell:cargo",
+            Some("Need to verify the fallback build path before editing files."),
+        );
+        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let widget = ApprovalWidget::new(&request, &view);
+        let area = Rect::new(0, 0, 120, 34);
+        let mut buf = Buffer::empty(area);
+
+        widget.render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+
+        assert!(rendered.contains("Intent:"), "{rendered}");
+        assert!(rendered.contains("fallback build path"), "{rendered}");
+        assert!(rendered.contains("Command:"), "{rendered}");
+        assert!(rendered.contains("cargo build ||"), "{rendered}");
+        assert!(rendered.contains("echo fallback"), "{rendered}");
     }
 
     /// Regression for issue #65: after `App::handle_resize`, the chat widget
