@@ -641,6 +641,9 @@ Current v0.9 track credits:
   work (#2730, #2714, #2715, #2717, #2718)
 - **[shenjackyuanjie](https://github.com/shenjackyuanjie)** — HarmonyOS /
   OpenHarmony porting work and MatePad Edge validation trail (#2634)
+- **[aboimpinto](https://github.com/aboimpinto)** — sidebar command polish and
+  pausable custom-command lifecycle direction harvested into the v0.9 track
+  (#2788, #2732)
 - **[HUQIANTAO](https://github.com/HUQIANTAO)** — `web_run` cache-state
   lock-splitting, turn-metadata prefix-cache stability, and project-context
   cache work (#2502, #2517, #2636)
@@ -716,7 +719,10 @@ Current and recurring contributors include:
 - **[Aitensa](https://github.com/Aitensa)** — CJK wrapping propagation for diff and pager output (#1622)
 - **[qiyan233](https://github.com/qiyan233)** — legacy DeepSeek CN provider alias compatibility (#1645)
 - **[zlh124](https://github.com/zlh124)** — WSL2/headless startup report, clipboard-init fix, CodeWhale tab-title polish, localized context-menu labels, and approval-dialog fixes (#1772, #1773, #2319, #2320, #2325)
-- **[aboimpinto](https://github.com/aboimpinto)** — Windows alt-screen logging, Home/End composer, and runtime log follow-ups (#1774, #1776, #1748, #1749, #1782, #1783)
+- **[aboimpinto](https://github.com/aboimpinto)** — Windows alt-screen
+  logging, Home/End composer, runtime log follow-ups, sidebar command polish,
+  and pausable command lifecycle work (#1774, #1776, #1748, #1749, #1782,
+  #1783, #2788, #2732)
 - **[LeoLin990405](https://github.com/LeoLin990405)** — provider model passthrough, reasoning replay, thinking-only turn, and Windows quoting fixes (#1740, #1743, #1742, #1744)
 - **[nightt5879](https://github.com/nightt5879)** — Ctrl+C prompt restore, provider registry drift docs, tool-search defaults, footer git branch display, and startup prompt interactivity (#1764, #2274, #2344, #2347, #2373)
 - **[donglovejava](https://github.com/donglovejava)** — paste @file consolidation, CJK panic fix, user feedback, RLM routing, edit_file retry, hidden-worktree discovery skip, IME composer routing, and eager shell companion tools (#2154-#2168, #2302, #2329, #2330, #2331)
