@@ -1590,10 +1590,7 @@ pub fn load_project_config(workspace: &Path) -> Option<ConfigToml> {
             match toml::from_str(&raw) {
                 Ok(config) => return Some(config),
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to parse project config {}: {e}",
-                        path.display()
-                    );
+                    tracing::warn!("Failed to parse project config {}: {e}", path.display());
                     return None;
                 }
             }

@@ -2191,7 +2191,9 @@ impl McpPool {
 
         let errors = self.connect_all().await;
         for (server, err) in errors {
-            tracing::warn!("Failed to connect MCP server '{server}' for resource templates: {err:#}");
+            tracing::warn!(
+                "Failed to connect MCP server '{server}' for resource templates: {err:#}"
+            );
         }
         let mut items = Vec::new();
         for (server, conn) in &self.connections {

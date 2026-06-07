@@ -1718,7 +1718,9 @@ In {new} mode: {policy}\n\n\
                                 .build(tool_context),
                         )
                     } else {
-                        tracing::warn!("Sub-agents enabled but no API client available, falling back to basic tool set");
+                        tracing::warn!(
+                            "Sub-agents enabled but no API client available, falling back to basic tool set"
+                        );
                         Some(builder.build(tool_context))
                     }
                 } else {
