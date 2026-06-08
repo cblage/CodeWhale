@@ -503,6 +503,31 @@ pub enum MessageId {
     // Agent fanout card.
     FanoutCounts,
 
+    // Approval dialog — risk badges, category labels, field labels, options.
+    ApprovalRiskReview,
+    ApprovalRiskDestructive,
+    ApprovalCategorySafe,
+    ApprovalCategoryFileWrite,
+    ApprovalCategoryShell,
+    ApprovalCategoryNetwork,
+    ApprovalCategoryMcpRead,
+    ApprovalCategoryMcpAction,
+    ApprovalCategoryUnknown,
+    ApprovalFieldType,
+    ApprovalFieldAbout,
+    ApprovalFieldImpact,
+    ApprovalFieldParams,
+    ApprovalOptionApproveOnce,
+    ApprovalOptionApproveAlways,
+    ApprovalOptionDeny,
+    ApprovalOptionAbortTurn,
+    ApprovalBlockTitle,
+    ApprovalControlsHint,
+    ApprovalChooseHint,
+    ApprovalChooseAction,
+    ApprovalIntentLabel,
+    ApprovalMoreLines,
+
     CtxInspTitle,
     CtxInspSessionContext,
     CtxInspSystemPrompt,
@@ -825,6 +850,29 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CtxMenuHelp,
     MessageId::CtxMenuHelpDesc,
     MessageId::FanoutCounts,
+    MessageId::ApprovalRiskReview,
+    MessageId::ApprovalRiskDestructive,
+    MessageId::ApprovalCategorySafe,
+    MessageId::ApprovalCategoryFileWrite,
+    MessageId::ApprovalCategoryShell,
+    MessageId::ApprovalCategoryNetwork,
+    MessageId::ApprovalCategoryMcpRead,
+    MessageId::ApprovalCategoryMcpAction,
+    MessageId::ApprovalCategoryUnknown,
+    MessageId::ApprovalFieldType,
+    MessageId::ApprovalFieldAbout,
+    MessageId::ApprovalFieldImpact,
+    MessageId::ApprovalFieldParams,
+    MessageId::ApprovalOptionApproveOnce,
+    MessageId::ApprovalOptionApproveAlways,
+    MessageId::ApprovalOptionDeny,
+    MessageId::ApprovalOptionAbortTurn,
+    MessageId::ApprovalBlockTitle,
+    MessageId::ApprovalControlsHint,
+    MessageId::ApprovalChooseHint,
+    MessageId::ApprovalChooseAction,
+    MessageId::ApprovalIntentLabel,
+    MessageId::ApprovalMoreLines,
     MessageId::CtxInspTitle,
     MessageId::CtxInspSessionContext,
     MessageId::CtxInspSystemPrompt,
@@ -1455,6 +1503,33 @@ fn english(id: MessageId) -> &'static str {
             "{done} done · {running} running · {failed} failed · {pending} pending"
         }
 
+        // Approval dialog.
+        MessageId::ApprovalRiskReview => "REVIEW",
+        MessageId::ApprovalRiskDestructive => "DESTRUCTIVE",
+        MessageId::ApprovalCategorySafe => "Safe",
+        MessageId::ApprovalCategoryFileWrite => "File Write",
+        MessageId::ApprovalCategoryShell => "Shell Command",
+        MessageId::ApprovalCategoryNetwork => "Network",
+        MessageId::ApprovalCategoryMcpRead => "MCP Read",
+        MessageId::ApprovalCategoryMcpAction => "MCP Action",
+        MessageId::ApprovalCategoryUnknown => "Unknown",
+        MessageId::ApprovalFieldType => "Type:",
+        MessageId::ApprovalFieldAbout => "About:",
+        MessageId::ApprovalFieldImpact => "Impact:",
+        MessageId::ApprovalFieldParams => "Params:",
+        MessageId::ApprovalOptionApproveOnce => "Approve once",
+        MessageId::ApprovalOptionApproveAlways => "Approve always for this kind",
+        MessageId::ApprovalOptionDeny => "Deny this call",
+        MessageId::ApprovalOptionAbortTurn => "Abort the turn",
+        MessageId::ApprovalBlockTitle => "approval",
+        MessageId::ApprovalControlsHint => "  ·  v: full params  ·  Esc: abort",
+        MessageId::ApprovalChooseHint => "Choose: ",
+        MessageId::ApprovalChooseAction => {
+            "Enter selected option, or press y/a/d directly"
+        }
+        MessageId::ApprovalIntentLabel => "Intent: ",
+        MessageId::ApprovalMoreLines => "  … (+{count} lines)",
+
         MessageId::CtxInspTitle => "Context inspector",
         MessageId::CtxInspSessionContext => "Session Context",
         MessageId::CtxInspSystemPrompt => "System Prompt Structure",
@@ -1954,6 +2029,31 @@ fn vietnamese(id: MessageId) -> Option<&'static str> {
             "{done} hoàn thành · {running} đang chạy · {failed} thất bại · {pending} chờ"
         }
 
+        // Approval dialog.
+        MessageId::ApprovalRiskReview => "XEM XÉT",
+        MessageId::ApprovalRiskDestructive => "NGUY HẠI",
+        MessageId::ApprovalCategorySafe => "An toàn",
+        MessageId::ApprovalCategoryFileWrite => "Ghi Tệp",
+        MessageId::ApprovalCategoryShell => "Lệnh Shell",
+        MessageId::ApprovalCategoryNetwork => "Mạng",
+        MessageId::ApprovalCategoryMcpRead => "Đọc MCP",
+        MessageId::ApprovalCategoryMcpAction => "Hành động MCP",
+        MessageId::ApprovalCategoryUnknown => "Không xác định",
+        MessageId::ApprovalFieldType => "Loại:",
+        MessageId::ApprovalFieldAbout => "Mô tả:",
+        MessageId::ApprovalFieldImpact => "Tác động:",
+        MessageId::ApprovalFieldParams => "Tham số:",
+        MessageId::ApprovalOptionApproveOnce => "Phê duyệt một lần",
+        MessageId::ApprovalOptionApproveAlways => "Phê duyệt mọi lần cho loại này",
+        MessageId::ApprovalOptionDeny => "Từ chối lần gọi này",
+        MessageId::ApprovalOptionAbortTurn => "Hủy bỏ lượt",
+        MessageId::ApprovalBlockTitle => "phê duyệt",
+        MessageId::ApprovalControlsHint => "  ·  v: tham số  ·  Esc: hủy bỏ",
+        MessageId::ApprovalChooseHint => "Chọn: ",
+        MessageId::ApprovalChooseAction => "Enter để chọn, hoặc nhấn y/a/d trực tiếp",
+        MessageId::ApprovalIntentLabel => "Ý định: ",
+        MessageId::ApprovalMoreLines => "  … (+{count} dòng)",
+
         MessageId::CtxInspTitle => "Trình kiểm tra ngữ cảnh",
         MessageId::CtxInspSessionContext => "Ngữ cảnh phiên",
         MessageId::CtxInspSystemPrompt => "Cấu trúc lời nhắc hệ thống",
@@ -2017,6 +2117,31 @@ fn traditional_chinese(id: MessageId) -> Option<&'static str> {
         MessageId::FanoutCounts => {
             "{done} 已完成 · {running} 運行中 · {failed} 失敗 · {pending} 等待中"
         }
+
+        // Approval dialog.
+        MessageId::ApprovalRiskReview => "審查",
+        MessageId::ApprovalRiskDestructive => "破壞性",
+        MessageId::ApprovalCategorySafe => "安全",
+        MessageId::ApprovalCategoryFileWrite => "檔案寫入",
+        MessageId::ApprovalCategoryShell => "Shell 命令",
+        MessageId::ApprovalCategoryNetwork => "網路",
+        MessageId::ApprovalCategoryMcpRead => "MCP 讀取",
+        MessageId::ApprovalCategoryMcpAction => "MCP 操作",
+        MessageId::ApprovalCategoryUnknown => "未分類",
+        MessageId::ApprovalFieldType => "類型：",
+        MessageId::ApprovalFieldAbout => "說明：",
+        MessageId::ApprovalFieldImpact => "影響：",
+        MessageId::ApprovalFieldParams => "參數：",
+        MessageId::ApprovalOptionApproveOnce => "僅批准一次",
+        MessageId::ApprovalOptionApproveAlways => "本會話同類自動批准",
+        MessageId::ApprovalOptionDeny => "拒絕本次調用",
+        MessageId::ApprovalOptionAbortTurn => "終止本輪",
+        MessageId::ApprovalBlockTitle => "審批",
+        MessageId::ApprovalControlsHint => "  ·  v：完整參數  ·  Esc：終止",
+        MessageId::ApprovalChooseHint => "選擇：",
+        MessageId::ApprovalChooseAction => "Enter 執行選中項，或直接按 y/a/d",
+        MessageId::ApprovalIntentLabel => "意圖：",
+        MessageId::ApprovalMoreLines => "  … (還有 {count} 行)",
 
         MessageId::CtxInspTitle => "上下文檢查器",
         MessageId::CtxInspSessionContext => "會話上下文",
@@ -2474,8 +2599,33 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CtxMenuHelp => "ヘルプ",
         MessageId::CtxMenuHelpDesc => "キー操作とコマンド",
         MessageId::FanoutCounts => {
-            "{done} 完了 · {running} 実行中 · {failed} 失敗 · {pending} 待機"
+            "{done} 完了 · {running} 実行中 · {failed} 失敗 · {pending} 保留"
         }
+
+        // Approval dialog.
+        MessageId::ApprovalRiskReview => "確認",
+        MessageId::ApprovalRiskDestructive => "破壊的操作",
+        MessageId::ApprovalCategorySafe => "安全",
+        MessageId::ApprovalCategoryFileWrite => "ファイル書き込み",
+        MessageId::ApprovalCategoryShell => "シェルコマンド",
+        MessageId::ApprovalCategoryNetwork => "ネットワーク",
+        MessageId::ApprovalCategoryMcpRead => "MCP読み取り",
+        MessageId::ApprovalCategoryMcpAction => "MCPアクション",
+        MessageId::ApprovalCategoryUnknown => "未分類",
+        MessageId::ApprovalFieldType => "種類：",
+        MessageId::ApprovalFieldAbout => "詳細：",
+        MessageId::ApprovalFieldImpact => "影響：",
+        MessageId::ApprovalFieldParams => "パラメータ：",
+        MessageId::ApprovalOptionApproveOnce => "1回だけ承認",
+        MessageId::ApprovalOptionApproveAlways => "常に承認（この種類）",
+        MessageId::ApprovalOptionDeny => "拒否",
+        MessageId::ApprovalOptionAbortTurn => "中断",
+        MessageId::ApprovalBlockTitle => "承認",
+        MessageId::ApprovalControlsHint => "  ·  v: パラメータ表示  ·  Esc: 中止",
+        MessageId::ApprovalChooseHint => "選択：",
+        MessageId::ApprovalChooseAction => "Enterで選択、または y/a/d を直接入力",
+        MessageId::ApprovalIntentLabel => "意図：",
+        MessageId::ApprovalMoreLines => "  … (+{count} 行)",
 
         MessageId::CtxInspTitle => "コンテキストインスペクタ",
         MessageId::CtxInspSessionContext => "セッションコンテキスト",
@@ -2880,6 +3030,31 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::FanoutCounts => {
             "{done} 已完成 · {running} 运行中 · {failed} 失败 · {pending} 等待中"
         }
+
+        // Approval dialog.
+        MessageId::ApprovalRiskReview => "审查",
+        MessageId::ApprovalRiskDestructive => "破坏性",
+        MessageId::ApprovalCategorySafe => "安全",
+        MessageId::ApprovalCategoryFileWrite => "文件写入",
+        MessageId::ApprovalCategoryShell => "Shell 命令",
+        MessageId::ApprovalCategoryNetwork => "网络",
+        MessageId::ApprovalCategoryMcpRead => "MCP 读取",
+        MessageId::ApprovalCategoryMcpAction => "MCP 操作",
+        MessageId::ApprovalCategoryUnknown => "未知",
+        MessageId::ApprovalFieldType => "类型：",
+        MessageId::ApprovalFieldAbout => "说明：",
+        MessageId::ApprovalFieldImpact => "影响：",
+        MessageId::ApprovalFieldParams => "参数：",
+        MessageId::ApprovalOptionApproveOnce => "仅本次批准",
+        MessageId::ApprovalOptionApproveAlways => "本会话同类自动批准",
+        MessageId::ApprovalOptionDeny => "拒绝本次调用",
+        MessageId::ApprovalOptionAbortTurn => "终止本轮",
+        MessageId::ApprovalBlockTitle => "审批",
+        MessageId::ApprovalControlsHint => "  ·  v：完整参数  ·  Esc：终止",
+        MessageId::ApprovalChooseHint => "选择：",
+        MessageId::ApprovalChooseAction => "Enter 执行选中项，或直接按 y/a/d",
+        MessageId::ApprovalIntentLabel => "意图：",
+        MessageId::ApprovalMoreLines => "  … (还有 {count} 行)",
 
         MessageId::CtxInspTitle => "上下文检查器",
         MessageId::CtxInspSessionContext => "会话上下文",
@@ -3358,8 +3533,33 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CtxMenuHelp => "Ajuda",
         MessageId::CtxMenuHelpDesc => "atalhos de teclado e comandos",
         MessageId::FanoutCounts => {
-            "{done} concluído · {running} executando · {failed} falhou · {pending} pendente"
+            "{done} concluído · {running} em execução · {failed} falhou · {pending} pendente"
         }
+
+        // Approval dialog.
+        MessageId::ApprovalRiskReview => "REVISÃO",
+        MessageId::ApprovalRiskDestructive => "DESTRUTIVO",
+        MessageId::ApprovalCategorySafe => "Seguro",
+        MessageId::ApprovalCategoryFileWrite => "Escrita de Arquivo",
+        MessageId::ApprovalCategoryShell => "Comando Shell",
+        MessageId::ApprovalCategoryNetwork => "Rede",
+        MessageId::ApprovalCategoryMcpRead => "Leitura MCP",
+        MessageId::ApprovalCategoryMcpAction => "Ação MCP",
+        MessageId::ApprovalCategoryUnknown => "Desconhecido",
+        MessageId::ApprovalFieldType => "Tipo:",
+        MessageId::ApprovalFieldAbout => "Sobre:",
+        MessageId::ApprovalFieldImpact => "Impacto:",
+        MessageId::ApprovalFieldParams => "Parâmetros:",
+        MessageId::ApprovalOptionApproveOnce => "Aprovar uma vez",
+        MessageId::ApprovalOptionApproveAlways => "Aprovar sempre para este tipo",
+        MessageId::ApprovalOptionDeny => "Negar esta chamada",
+        MessageId::ApprovalOptionAbortTurn => "Abortar turno",
+        MessageId::ApprovalBlockTitle => "aprovação",
+        MessageId::ApprovalControlsHint => "  ·  v: parâmetros  ·  Esc: abortar",
+        MessageId::ApprovalChooseHint => "Escolha: ",
+        MessageId::ApprovalChooseAction => "Enter para selecionar, ou pressione y/a/d diretamente",
+        MessageId::ApprovalIntentLabel => "Intenção: ",
+        MessageId::ApprovalMoreLines => "  … (+{count} linhas)",
 
         MessageId::CtxInspTitle => "Inspetor de contexto",
         MessageId::CtxInspSessionContext => "Contexto da sessão",
@@ -3854,6 +4054,31 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::FanoutCounts => {
             "{done} completado · {running} ejecutando · {failed} falló · {pending} pendiente"
         }
+
+        // Approval dialog.
+        MessageId::ApprovalRiskReview => "REVISAR",
+        MessageId::ApprovalRiskDestructive => "DESTRUCTIVO",
+        MessageId::ApprovalCategorySafe => "Seguro",
+        MessageId::ApprovalCategoryFileWrite => "Escritura de Archivo",
+        MessageId::ApprovalCategoryShell => "Comando Shell",
+        MessageId::ApprovalCategoryNetwork => "Red",
+        MessageId::ApprovalCategoryMcpRead => "Lectura MCP",
+        MessageId::ApprovalCategoryMcpAction => "Acción MCP",
+        MessageId::ApprovalCategoryUnknown => "Desconocido",
+        MessageId::ApprovalFieldType => "Tipo:",
+        MessageId::ApprovalFieldAbout => "Acerca de:",
+        MessageId::ApprovalFieldImpact => "Impacto:",
+        MessageId::ApprovalFieldParams => "Parámetros:",
+        MessageId::ApprovalOptionApproveOnce => "Aprobar una vez",
+        MessageId::ApprovalOptionApproveAlways => "Aprobar siempre para este tipo",
+        MessageId::ApprovalOptionDeny => "Denegar esta llamada",
+        MessageId::ApprovalOptionAbortTurn => "Abortar turno",
+        MessageId::ApprovalBlockTitle => "aprobación",
+        MessageId::ApprovalControlsHint => "  ·  v: parámetros  ·  Esc: abortar",
+        MessageId::ApprovalChooseHint => "Elegir: ",
+        MessageId::ApprovalChooseAction => "Enter para seleccionar, o presione y/a/d directamente",
+        MessageId::ApprovalIntentLabel => "Intención: ",
+        MessageId::ApprovalMoreLines => "  … (+{count} líneas)",
 
         MessageId::CtxInspTitle => "Inspector de contexto",
         MessageId::CtxInspSessionContext => "Contexto de la sesión",

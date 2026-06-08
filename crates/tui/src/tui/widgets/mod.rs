@@ -24,7 +24,7 @@ pub use renderable::Renderable;
 
 use std::time::Duration;
 
-use crate::localization::Locale;
+use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::tui::app::{App, AppMode, ComposerDensity, VimMode};
 use crate::tui::approval::{
@@ -1171,10 +1171,7 @@ impl Renderable for ApprovalWidget<'_> {
             let max_width = card_area.width.saturating_sub(14) as usize;
             if max_width > 0 {
                 lines.push(Line::from(""));
-                let intent_label = match locale {
-                    Locale::ZhHans => "意图：",
-                    _ => "Intent: ",
-                };
+                let intent_label = tr(locale, MessageId::ApprovalIntentLabel);
                 let summary_lines: Vec<&str> = summary.lines().collect();
                 for (i, sline) in summary_lines.iter().take(3).enumerate() {
                     let prefix = if i == 0 { intent_label } else { "  " };
@@ -1193,10 +1190,8 @@ impl Renderable for ApprovalWidget<'_> {
                     ]));
                 }
                 if summary_lines.len() > 3 {
-                    let more = match locale {
-                        Locale::ZhHans => format!("  … (还有 {} 行)", summary_lines.len() - 3),
-                        _ => format!("  … (+{} lines)", summary_lines.len() - 3),
-                    };
+                    let more = tr(locale, MessageId::ApprovalMoreLines)
+                        .replace("{count}", &(summary_lines.len() - 3).to_string());
                     lines.push(Line::from(vec![
                         Span::raw("  "),
                         Span::styled(more, Style::default().fg(palette::TEXT_HINT)),
@@ -1381,87 +1376,64 @@ fn approval_option_style(is_selected: bool, color: Color) -> Style {
 }
 
 fn risk_badge_text(risk: RiskLevel, locale: Locale) -> &'static str {
-    match (locale, risk) {
-        (Locale::ZhHans, RiskLevel::Benign) => "审查",
-        (Locale::ZhHans, RiskLevel::Destructive) => "破坏性",
-        (_, RiskLevel::Benign) => "REVIEW",
-        (_, RiskLevel::Destructive) => "DESTRUCTIVE",
+    match risk {
+        RiskLevel::Benign => tr(locale, MessageId::ApprovalRiskReview),
+        RiskLevel::Destructive => tr(locale, MessageId::ApprovalRiskDestructive),
     }
 }
 
 fn category_label_for(category: ToolCategory, locale: Locale) -> (&'static str, Color) {
-    match (locale, category) {
-        (Locale::ZhHans, ToolCategory::Safe) => ("安全", palette::STATUS_SUCCESS),
-        (Locale::ZhHans, ToolCategory::FileWrite) => ("文件写入", palette::STATUS_WARNING),
-        (Locale::ZhHans, ToolCategory::Shell) => ("Shell 命令", palette::STATUS_ERROR),
-        (Locale::ZhHans, ToolCategory::Network) => ("网络", palette::STATUS_WARNING),
-        (Locale::ZhHans, ToolCategory::McpRead) => ("MCP 读取", palette::DEEPSEEK_SKY),
-        (Locale::ZhHans, ToolCategory::McpAction) => ("MCP 操作", palette::STATUS_WARNING),
-        (Locale::ZhHans, ToolCategory::Unknown) => ("未知", palette::STATUS_ERROR),
-        (_, ToolCategory::Safe) => ("Safe", palette::STATUS_SUCCESS),
-        (_, ToolCategory::FileWrite) => ("File Write", palette::STATUS_WARNING),
-        (_, ToolCategory::Shell) => ("Shell Command", palette::STATUS_ERROR),
-        (_, ToolCategory::Network) => ("Network", palette::STATUS_WARNING),
-        (_, ToolCategory::McpRead) => ("MCP Read", palette::DEEPSEEK_SKY),
-        (_, ToolCategory::McpAction) => ("MCP Action", palette::STATUS_WARNING),
-        (_, ToolCategory::Unknown) => ("Unknown", palette::STATUS_ERROR),
-    }
+    let label = match category {
+        ToolCategory::Safe => tr(locale, MessageId::ApprovalCategorySafe),
+        ToolCategory::FileWrite => tr(locale, MessageId::ApprovalCategoryFileWrite),
+        ToolCategory::Shell => tr(locale, MessageId::ApprovalCategoryShell),
+        ToolCategory::Network => tr(locale, MessageId::ApprovalCategoryNetwork),
+        ToolCategory::McpRead => tr(locale, MessageId::ApprovalCategoryMcpRead),
+        ToolCategory::McpAction => tr(locale, MessageId::ApprovalCategoryMcpAction),
+        ToolCategory::Unknown => tr(locale, MessageId::ApprovalCategoryUnknown),
+    };
+    let color = match category {
+        ToolCategory::Safe => palette::STATUS_SUCCESS,
+        ToolCategory::FileWrite => palette::STATUS_WARNING,
+        ToolCategory::Shell => palette::STATUS_ERROR,
+        ToolCategory::Network => palette::STATUS_WARNING,
+        ToolCategory::McpRead => palette::DEEPSEEK_SKY,
+        ToolCategory::McpAction => palette::STATUS_WARNING,
+        ToolCategory::Unknown => palette::STATUS_ERROR,
+    };
+    (label, color)
 }
 
 fn approval_word(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "审批",
-        _ => "approval",
-    }
+    tr(locale, MessageId::ApprovalBlockTitle)
 }
 
 fn label_type(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "类型：",
-        _ => "Type: ",
-    }
+    tr(locale, MessageId::ApprovalFieldType)
 }
 
 fn label_about(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "说明：",
-        _ => "About:  ",
-    }
+    tr(locale, MessageId::ApprovalFieldAbout)
 }
 
 fn label_impact(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "影响：",
-        _ => "Impact: ",
-    }
+    tr(locale, MessageId::ApprovalFieldImpact)
 }
 
 fn label_params(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "参数：",
-        _ => "Params: ",
-    }
+    tr(locale, MessageId::ApprovalFieldParams)
 }
 
 fn footer_controls(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "  ·  v：完整参数  ·  Esc：终止",
-        _ => "  ·  v: full params  ·  Esc: abort",
-    }
+    tr(locale, MessageId::ApprovalControlsHint)
 }
 
 fn selection_hint_prefix(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "选择：",
-        _ => "Choose: ",
-    }
+    tr(locale, MessageId::ApprovalChooseHint)
 }
 
 fn selection_hint_value(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "Enter 执行选中项，或直接按 y/a/d",
-        _ => "Enter selected option, or press y/a/d directly",
-    }
+    tr(locale, MessageId::ApprovalChooseAction)
 }
 
 struct ApprovalOptionRow {
@@ -1497,31 +1469,19 @@ fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 
 }
 
 fn option_approve_once(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "仅本次批准",
-        _ => "Approve once",
-    }
+    tr(locale, MessageId::ApprovalOptionApproveOnce)
 }
 
 fn option_approve_always(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "本会话同类自动批准",
-        _ => "Approve always for this kind",
-    }
+    tr(locale, MessageId::ApprovalOptionApproveAlways)
 }
 
 fn option_deny(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "拒绝本次调用",
-        _ => "Deny this call",
-    }
+    tr(locale, MessageId::ApprovalOptionDeny)
 }
 
 fn option_abort(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "终止本轮",
-        _ => "Abort the turn",
-    }
+    tr(locale, MessageId::ApprovalOptionAbortTurn)
 }
 
 pub struct ElevationWidget<'a> {
