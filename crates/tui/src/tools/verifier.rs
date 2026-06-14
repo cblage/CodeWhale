@@ -263,7 +263,7 @@ impl ToolSpec for RunVerifiersTool {
                 "background": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Start verifier gates as background shell jobs and return task_ids immediately. Use for long build/test/lint gates, then poll with exec_shell_wait or task_shell_wait while continuing independent inspection."
+                    "description": "Start verifier gates as background shell jobs and return task_ids immediately. Use for long build/test/lint gates; the transcript is notified automatically on completion, and exec_shell_wait/task_shell_wait are only for early output or true dependency barriers."
                 }
             },
             "additionalProperties": false
@@ -470,11 +470,11 @@ fn start_background_gates(
     let success = failed_to_start == 0 && started > 0;
     let summary = if failed_to_start == 0 {
         format!(
-            "Started {started} verifier gate(s) in the background; {skipped} skipped. Poll task_ids with exec_shell_wait or task_shell_wait."
+            "Started {started} verifier gate(s) in the background; {skipped} skipped. You will be notified automatically when each gate finishes; continue inspecting or implementing while they run."
         )
     } else {
         format!(
-            "Started {started} verifier gate(s), failed to start {failed_to_start}, and skipped {skipped}. Poll task_ids with exec_shell_wait or task_shell_wait."
+            "Started {started} verifier gate(s), failed to start {failed_to_start}, and skipped {skipped}. You will be notified automatically when each gate finishes; continue inspecting or implementing while they run."
         )
     };
     let task_ids = jobs
@@ -502,6 +502,8 @@ fn start_background_gates(
         "backgrounded": true,
         "detached_start": true,
         "verifier_background": true,
+        "auto_notify_on_completion": true,
+        "background_policy": "nonblocking",
         "task_ids": task_ids,
         "poll_with": ["exec_shell_wait", "task_shell_wait"]
     })))
@@ -1279,18 +1281,28 @@ mod tests {
         assert!(parsed.background);
         assert_eq!(parsed.started, 1);
         assert_eq!(parsed.failed_to_start, 0);
+        assert!(parsed.summary.contains("notified automatically"));
         let task_id = parsed.jobs[0]
             .task_id
             .as_deref()
             .expect("background task id");
+        let metadata = result.metadata.as_ref().expect("metadata");
         assert!(
-            result
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("verifier_background"))
+            metadata
+                .get("verifier_background")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             "metadata should mark verifier background start"
+        );
+        assert_eq!(
+            metadata
+                .get("auto_notify_on_completion")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            metadata.get("background_policy").and_then(Value::as_str),
+            Some("nonblocking")
         );
 
         let output = ctx

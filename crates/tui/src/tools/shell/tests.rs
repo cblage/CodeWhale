@@ -252,6 +252,115 @@ async fn read_only_shell_policy_allows_readonly_inspection() {
 }
 
 #[test]
+fn exec_shell_wait_schema_defaults_to_nonblocking_snapshot() {
+    let schema = ShellWaitTool::new("exec_shell_wait").input_schema();
+    assert_eq!(schema["properties"]["wait"]["default"], json!(false));
+    assert!(
+        ShellWaitTool::new("exec_shell_wait")
+            .description()
+            .contains("without blocking by default")
+    );
+}
+
+#[tokio::test]
+async fn exec_shell_wait_without_wait_arg_returns_snapshot() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let start_result = ExecShellTool
+        .execute(
+            json!({"command": sleep_command(2), "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("start background");
+    let task_id = start_result
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("task_id"))
+        .and_then(Value::as_str)
+        .expect("task id")
+        .to_string();
+
+    let started = Instant::now();
+    let wait_result = ShellWaitTool::new("exec_shell_wait")
+        .execute(json!({"task_id": task_id, "timeout_ms": 5_000}), &ctx)
+        .await
+        .expect("wait snapshot");
+
+    assert!(
+        started.elapsed() < Duration::from_millis(1_000),
+        "default wait path should return a snapshot instead of blocking"
+    );
+    assert_eq!(
+        wait_result
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("status"))
+            .and_then(Value::as_str),
+        Some("Running")
+    );
+}
+
+#[tokio::test]
+async fn background_start_advertises_auto_notify() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let result = ExecShellTool
+        .execute(
+            json!({"command": sleep_command(1), "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("start background");
+
+    assert!(result.content.contains("notified in the transcript"));
+    let metadata = result.metadata.as_ref().expect("metadata");
+    assert_eq!(
+        metadata
+            .get("auto_notify_on_completion")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        metadata.get("background_policy").and_then(Value::as_str),
+        Some("nonblocking")
+    );
+}
+
+#[tokio::test]
+async fn drain_finished_jobs_reports_once() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let result = ExecShellTool
+        .execute(
+            json!({"command": echo_command("drain-finished-once"), "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("start background");
+    let task_id = result
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("task_id"))
+        .and_then(Value::as_str)
+        .expect("task id")
+        .to_string();
+
+    let mut manager = ctx.shell_manager.lock().expect("shell manager");
+    let completed = wait_for_completed_shell(&mut manager, &task_id);
+    assert_ne!(completed.status, ShellStatus::Running);
+
+    let first = manager.drain_finished_jobs();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].task_id, task_id);
+    assert_eq!(first[0].status, ShellStatus::Completed);
+    assert!(first[0].stdout_tail.contains("drain-finished-once"));
+
+    let second = manager.drain_finished_jobs();
+    assert!(second.is_empty(), "completion should be reported only once");
+}
+
+#[test]
 #[cfg(unix)]
 fn shell_execution_scrubs_parent_env_and_keeps_explicit_env() {
     let _guard = env_lock().lock().expect("env lock");

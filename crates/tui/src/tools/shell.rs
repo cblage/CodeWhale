@@ -115,6 +115,19 @@ pub struct ShellJobSnapshot {
     pub linked_task_id: Option<String>,
 }
 
+/// Once-only completion event for a tracked background shell job.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellCompletionEvent {
+    pub task_id: String,
+    pub command: String,
+    pub status: ShellStatus,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+    pub linked_task_id: Option<String>,
+}
+
 /// Full output view used by `/jobs show <id>`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellJobDetail {
@@ -487,6 +500,7 @@ pub struct BackgroundShell {
     stderr_buffer: Option<Arc<Mutex<Vec<u8>>>>,
     stdout_cursor: usize,
     stderr_cursor: usize,
+    completion_reported: bool,
     stdin: Option<StdinWriter>,
     child: Option<ShellChild>,
     #[cfg(windows)]
@@ -719,6 +733,20 @@ impl BackgroundShell {
             stdin_available: self.stdin.is_some() && self.status == ShellStatus::Running,
             stale: false,
             linked_task_id: self.linked_task_id.clone(),
+        }
+    }
+
+    fn completion_event(&self) -> ShellCompletionEvent {
+        let snapshot = self.job_snapshot();
+        ShellCompletionEvent {
+            task_id: snapshot.id,
+            command: snapshot.command,
+            status: snapshot.status,
+            exit_code: snapshot.exit_code,
+            duration_ms: snapshot.elapsed_ms,
+            stdout_tail: snapshot.stdout_tail,
+            stderr_tail: snapshot.stderr_tail,
+            linked_task_id: snapshot.linked_task_id,
         }
     }
 
@@ -1419,6 +1447,7 @@ impl ShellManager {
             stderr_buffer,
             stdout_cursor: 0,
             stderr_cursor: 0,
+            completion_reported: false,
             stdin,
             child: Some(child),
             #[cfg(windows)]
@@ -1653,6 +1682,21 @@ impl ShellManager {
                 .then_with(|| a.id.cmp(&b.id))
         });
         jobs
+    }
+
+    /// Drain finished background shell jobs that have not yet been reported to
+    /// the model/runtime transcript.
+    pub fn drain_finished_jobs(&mut self) -> Vec<ShellCompletionEvent> {
+        let mut events = Vec::new();
+        for shell in self.processes.values_mut() {
+            shell.poll();
+            if shell.status != ShellStatus::Running && !shell.completion_reported {
+                shell.completion_reported = true;
+                events.push(shell.completion_event());
+            }
+        }
+        events.sort_by(|a, b| a.task_id.cmp(&b.task_id));
+        events
     }
 
     /// Remember a restart-stale job so the UI can show it instead of hiding it.
@@ -2041,7 +2085,7 @@ impl ToolSpec for ExecShellTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command in the workspace directory. Foreground mode is for bounded commands; use background=true or task_shell_start for work expected to take >5 seconds, then poll/wait."
+        "Execute a shell command in the workspace directory. Foreground mode is for bounded commands; use background=true or task_shell_start for work expected to take >5 seconds. Background jobs return immediately and notify the transcript on completion."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -2058,7 +2102,7 @@ impl ToolSpec for ExecShellTool {
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "Run in background and return task_id (default: false). Prefer task_shell_start or background=true for commands expected to take >5 seconds, including builds, test suites, servers, CI polling, sleep, or other long-running work; poll with exec_shell_wait or task_shell_wait."
+                    "description": "Run in background and return task_id (default: false). Returns immediately and notifies on completion; prefer this for commands expected to take >5 seconds, including builds, test suites, servers, CI polling, sleep, or other long-running work. Use exec_shell_wait only when you need early output, and set wait=true only at a true dependency."
                 },
                 "interactive": {
                     "type": "boolean",
@@ -2429,10 +2473,12 @@ impl ToolSpec for ExecShellTool {
                 } else if result.status == ShellStatus::Running {
                     if backgrounded_foreground {
                         format!(
-                            "Command moved to background: {task_id_str}\n\nPoll with exec_shell_wait or cancel with exec_shell_cancel."
+                            "Command moved to background: {task_id_str}\n\nReturns immediately; you will be notified in the transcript when it finishes. Keep working; call exec_shell_wait only if you need early output, or with wait=true at a true dependency."
                         )
                     } else {
-                        format!("Background task started: {task_id_str}")
+                        format!(
+                            "Background task started: {task_id_str}\n\nReturns immediately; you will be notified in the transcript when it finishes. Keep working; call exec_shell_wait only if you need early output, or with wait=true at a true dependency."
+                        )
                     }
                 } else if result.status == ShellStatus::Killed && was_cancelled {
                     format!(
@@ -2493,6 +2539,10 @@ impl ToolSpec for ExecShellTool {
                     }),
                 });
                 metadata["backgrounded"] = json!(background || backgrounded_foreground);
+                if background || backgrounded_foreground {
+                    metadata["auto_notify_on_completion"] = json!(true);
+                    metadata["background_policy"] = json!("nonblocking");
+                }
                 if result.status == ShellStatus::TimedOut && !background && !interactive {
                     metadata["foreground_timeout_recovery"] = json!({
                         "process_killed": true,
@@ -2867,7 +2917,7 @@ impl ToolSpec for ShellWaitTool {
     }
 
     fn description(&self) -> &'static str {
-        "Wait for a background shell task and return incremental output. Turn cancellation stops waiting but leaves the background task running."
+        "Inspect a background shell task and return incremental output without blocking by default. Set wait=true only for a deliberate dependency barrier. Turn cancellation stops waiting but leaves the background task running."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -2884,7 +2934,8 @@ impl ToolSpec for ShellWaitTool {
                 },
                 "wait": {
                     "type": "boolean",
-                    "description": "Wait for completion before returning (default: true)"
+                    "default": false,
+                    "description": "Snapshot the latest background output and return immediately (default). Background jobs notify the transcript automatically on completion, so normally do not wait. Set wait=true only for a deliberate barrier at a true dependency or final gate."
                 }
             },
             "required": ["task_id"]
@@ -2905,7 +2956,7 @@ impl ToolSpec for ShellWaitTool {
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let task_id = required_task_id(&input)?;
-        let wait = optional_bool(&input, "wait", true);
+        let wait = optional_bool(&input, "wait", false);
         let timeout_ms = optional_u64(&input, "timeout_ms", 30_000);
 
         let (delta, wait_canceled) = if wait {
