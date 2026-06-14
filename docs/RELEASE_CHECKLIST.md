@@ -88,6 +88,46 @@ Run, in order, from the repo root:
       attack details in the title. Save those for the GitHub release notes
       after the tag is pushed.
 
+## 5b. Branch hygiene (post-merge)
+
+After the release/integration merge lands, make it obvious where the release
+tip lives and clean up stale branches **safely**. A working checkout left on a
+scratch/renovate branch (even when `HEAD` already matches the tag) creates
+release anxiety: contributors cannot tell whether their work merged.
+
+- [ ] Run the dry-run report first (read-only, deletes nothing):
+
+      ```sh
+      ./scripts/release/branch-hygiene.sh --release-branch codex/vX.Y.Z
+      ```
+
+      It prints: the current checkout branch, the local + remote release tips,
+      and `origin/main`; the branches that are **safe to delete** (tip already
+      contained in `origin/main` or the release branch); and a **keep / needs
+      review** list naming each branch, its unique commit count, the author(s),
+      and the keep reason. The summary line reports how many are safe-deletes,
+      how many were kept for contributor work, and how many need a human
+      decision. A diverged local/remote release tip exits non-zero.
+- [ ] If the working checkout is parked on a stale branch, switch to the
+      release branch and fast-forward it:
+
+      ```sh
+      git switch codex/vX.Y.Z
+      git fetch origin && git merge --ff-only origin/codex/vX.Y.Z   # if behind
+      ```
+- [ ] Only after reviewing the dry-run, delete the **safe** branches. Local
+      first; add `--prune-remote` to also delete remote safe-deletes:
+
+      ```sh
+      ./scripts/release/branch-hygiene.sh --release-branch codex/vX.Y.Z --prune --yes
+      ```
+
+      The script **never** auto-deletes a branch with unique commits from a
+      contributor other than Hunter unless that work is already merged. Those
+      land in the keep/review list with author and reason; review, merge,
+      harvest with credit, or explicitly preserve them before removing the
+      branch. When in doubt, leave the branch and record the decision.
+
 ## 6. CI green and review
 
 - [ ] All required CI jobs are green. The `versions` job should mirror the
