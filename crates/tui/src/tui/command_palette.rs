@@ -83,11 +83,11 @@ pub fn build_entries(
     for skill in skills.list() {
         entries.push(CommandPaletteEntry {
             section: PaletteSection::Skill,
-            label: format!("skill:{}", skill.name),
+            label: format!("${}", skill.name),
             description: skill.description.clone(),
-            command: format!("/skill {}", skill.name),
+            command: format!("${}", skill.name),
             action: CommandPaletteAction::ExecuteCommand {
-                command: format!("/skill {}", skill.name),
+                command: format!("${}", skill.name),
             },
         });
     }
@@ -1120,8 +1120,8 @@ mod tests {
             .map(|entry| entry.label.as_str())
             .collect::<Vec<_>>();
 
-        assert!(skill_labels.contains(&"skill:workspace-skill"));
-        assert!(skill_labels.contains(&"skill:configured-skill"));
+        assert!(skill_labels.contains(&"$workspace-skill"));
+        assert!(skill_labels.contains(&"$configured-skill"));
     }
 
     #[test]

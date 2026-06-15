@@ -106,6 +106,30 @@ pub fn get_command_info(name: &str) -> Option<&'static CommandInfo> {
 /// Execute a slash command
 pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
     let trimmed = cmd.trim();
+
+    // `$skillname` is a backward-compatible alias for `/skill skillname`.
+    // Resolve it early so skills can be loaded with the `$` prefix.
+    if let Some(skill_input) = trimmed.strip_prefix('$') {
+        let skill_input = skill_input.trim_start();
+        if skill_input.is_empty() {
+            return CommandResult::error(
+                "Type a skill name after $. For example: $getting-started",
+            );
+        }
+        let parts: Vec<&str> = skill_input.splitn(2, char::is_whitespace).collect();
+        let skill_name = parts.first().copied().unwrap_or("");
+        let arg = parts
+            .get(1)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty());
+        if let Some(result) = groups::skills::run_skill_by_name(app, skill_name, arg) {
+            return result;
+        }
+        return CommandResult::error(format!(
+            "Unknown skill: ${skill_name}. Type /skills to see installed skills."
+        ));
+    }
+
     let parts: Vec<&str> = trimmed.splitn(2, char::is_whitespace).collect();
     let command = parts
         .first()
@@ -1108,5 +1132,31 @@ mod tests {
             .expect("unknown command should return an error message");
         assert!(msg.contains("Unknown command: /zzzzzz"));
         assert!(msg.contains("Type /help for available commands."));
+    }
+
+    #[test]
+    fn dollar_skill_prefix_with_no_name_shows_usage() {
+        let mut app = create_test_app();
+        let result = execute("$", &mut app);
+        assert!(result.is_error);
+        let msg = result.message.expect("should return error message");
+        assert!(msg.contains("Type a skill name after $"));
+    }
+
+    #[test]
+    fn dollar_skill_prefix_unknown_skill_reports_unknown_skill() {
+        let mut app = create_test_app();
+        let result = execute("$definitely-not-a-real-skill-12345", &mut app);
+        assert!(result.is_error);
+        let msg = result.message.expect("should return error message");
+        assert!(msg.contains("Unknown skill: $definitely-not-a-real-skill-12345"));
+        assert!(msg.contains("/skills"));
+    }
+
+    #[test]
+    fn dollar_skill_prefix_does_not_break_existing_slash_dispatch() {
+        let mut app = create_test_app();
+        let result = execute("/help", &mut app);
+        assert!(!result.is_error);
     }
 }

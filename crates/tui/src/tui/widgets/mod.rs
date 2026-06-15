@@ -2279,6 +2279,30 @@ pub(crate) fn slash_completion_hints(
         return Vec::new();
     }
 
+    let trimmed = input.trim_start();
+    // `$skillname` mode: only skill completions, prefixed with `$`.
+    if trimmed.starts_with('$') {
+        let prefix = trimmed.trim_start_matches('$').to_ascii_lowercase();
+        let mut entries: Vec<SlashMenuEntry> = Vec::new();
+        for (skill_name, skill_desc) in cached_skills {
+            let skill_name_lower = skill_name.to_ascii_lowercase();
+            if skill_name_lower.starts_with(&prefix)
+                || skill_name_lower.contains(&prefix)
+                || fuzzy_chars_in_order(&prefix, &skill_name_lower)
+            {
+                entries.push(SlashMenuEntry {
+                    name: format!("${skill_name}"),
+                    description: skill_desc.clone(),
+                    is_skill: true,
+                    alias_hint: None,
+                });
+            }
+        }
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries.dedup_by(|a, b| a.name == b.name);
+        return entries.into_iter().take(limit).collect();
+    }
+
     let prefix = input.trim_start_matches('/');
     let completing_skill_arg = prefix.strip_prefix("skill ").map(str::trim_start);
     if input.contains(char::is_whitespace) && completing_skill_arg.is_none() {

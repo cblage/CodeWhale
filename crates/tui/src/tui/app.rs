@@ -91,7 +91,13 @@ pub(crate) fn resolve_skills_dir(
 }
 
 pub(crate) fn looks_like_slash_command_input(input: &str) -> bool {
-    let Some(rest) = input.trim_start().strip_prefix('/') else {
+    let trimmed = input.trim_start();
+    // `$skillname` at the start of input is treated like a slash command so the
+    // skill-completion menu appears.
+    let Some(rest) = trimmed
+        .strip_prefix('/')
+        .or_else(|| trimmed.strip_prefix('$'))
+    else {
         return false;
     };
     if rest.chars().next().is_some_and(|ch| ch.is_whitespace()) {
