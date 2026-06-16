@@ -370,7 +370,7 @@ max_subagents = 10 # optional (1-20)
 # Novita AI-hosted inference (https://novita.ai)
 [providers.novita]
 # api_key = "YOUR_NOVITA_API_KEY"
-# base_url = "https://api.novita.ai/v1"
+# base_url = "https://api.novita.ai/openai/v1"
 # model = "deepseek/deepseek-v4-pro"         # or deepseek/deepseek-v4-flash
 
 # Fireworks AI-hosted DeepSeek V4 (https://fireworks.ai)

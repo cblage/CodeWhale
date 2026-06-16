@@ -51,6 +51,9 @@ folds in several community contributions.
 - The per-turn runtime tag exposes capability posture instead of human-facing mode labels. (#3213)
 - Independent shell and verifier work defaults to background jobs with nonblocking waits and a
   completion notification; blocking now requires an explicit wait. (#3212)
+- Sub-agent launches now expose explicit `model_strength` and `thinking` controls to the model
+  instead of hidden child-model auto-routing; `explore` work is documented as a good fit for
+  faster models and `thinking: "off"`.
 - Plan mode is strictly read-only (no shell tools), consistent with its runtime posture.
 - `/swarm` is gated behind the durable worker substrate. (#3218)
 - Legacy `deepseek` install/update path resolves to `codewhale`. (#2960, #2924, #2917)
@@ -61,6 +64,8 @@ folds in several community contributions.
   off the render thread, AgentProgress events are coalesced, and sub-agents no longer park on
   input with no orchestrator to answer; a six-worker stress test guards input/render/cancel
   liveness. (#3216, #3096)
+- Idle sub-agent completion notifications now resume the parent turn instead of waiting for a
+  later user message; thanks @giovanni-paolilla for the deadlock report (#3266).
 - **Provider/model route isolation** — provider and model state is session-local, and a
   mismatched provider+model tuple is rejected at the route boundary. (#3227)
 - Route-effective context-window metadata, over-limit preflight, and bounded recovery from
@@ -80,6 +85,14 @@ folds in several community contributions.
   is 100% complete.
 - Plan mode no longer shortcuts investigation for requests that name a repository, URL, version,
   release, build state, benchmark, bug, PR, issue, API surface, or local code path.
+- Oversized pasted text stays editable in the composer, with a file backup appended at submit
+  time for model access; thanks @idling11 (#3267, closes #3263).
+- Bare digit keys `1`-`8` now insert text instead of firing hotbar slots; use `Alt+digit` for
+  hotbar actions. Thanks @wjq2026 for the report and @DieMoe233 for the paste-path note (#3243).
+- Kimi/Moonshot tool schemas normalize empty function parameters to a root object schema; thanks
+  @jghwwnq for the provider repro (#3265).
+- Novita defaults to its OpenAI-compatible `/openai/v1` endpoint so chat completions no longer
+  404 out of the box; thanks @buko for the report and endpoint verification (#3255).
 - Dependency security: `ws` pinned to 8.21.0 across npm packages to close remote memory-exhaustion
   DoS (dependabot).
 
@@ -94,6 +107,7 @@ folds in several community contributions.
 - VS Code read-only API documentation — thanks @cyq1017 (#3013)
 - Atomic ask-only permission rule persistence — thanks @greyfreedom (#3233)
 - DeepInfra provider support — thanks @idling11 (#3235, closes #3231)
+- Editable oversized paste composer flow — thanks @idling11 (#3267, closes #3263)
 - WeChat bridge (`integrations/weixin-bridge` via Feishu + Tencent OpenClaw) — thanks @VincentCorleone (#3206)
 - Config robustness: atomic permission-rule save, one-time config `.bak` backup before the first changed write, `CODEWHALE_HOME` as primary config home, and accepting the dispatcher-written config shape (camelCase aliases + `[features.enabled]` table) so legacy/dual-written configs parse cleanly
 - Dependency/CI bumps: docker login/qemu actions, softprops gh-release, download-artifact, vitest, @opennextjs/cloudflare, form-data, js-yaml, dompurify, ws

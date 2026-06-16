@@ -998,6 +998,32 @@ pub fn sanitize_for_kimi(schema: &mut serde_json::Value) {
     }
 }
 
+/// Normalize a complete Kimi / Moonshot `function.parameters` object.
+///
+/// This is root-only because recursively injecting `type: object` into every
+/// empty object would corrupt JSON Schema maps such as `"properties": {}`.
+/// The existing Kimi pass still handles nested `anyOf` / `oneOf` placement.
+pub fn sanitize_for_kimi_parameters(parameters: &mut serde_json::Value) {
+    if !parameters.is_object() {
+        *parameters = serde_json::Value::Object(Map::new());
+    }
+
+    if let Some(obj) = parameters.as_object_mut() {
+        let root_object_schema = obj.is_empty()
+            || obj.contains_key("properties")
+            || obj.contains_key("required")
+            || obj.contains_key("additionalProperties");
+        if root_object_schema && !obj.contains_key("type") {
+            obj.insert(
+                "type".to_string(),
+                serde_json::Value::String("object".to_string()),
+            );
+        }
+    }
+
+    sanitize_for_kimi(parameters);
+}
+
 #[cfg(test)]
 mod kimi_tests {
     use super::*;
@@ -1082,5 +1108,28 @@ mod kimi_tests {
         let mut schema = original.clone();
         sanitize_for_kimi(&mut schema);
         assert_eq!(schema, original);
+    }
+
+    #[test]
+    fn kimi_parameters_add_type_to_empty_root() {
+        let mut schema = json!({});
+        sanitize_for_kimi_parameters(&mut schema);
+        assert_eq!(schema, json!({"type": "object"}));
+    }
+
+    #[test]
+    fn kimi_parameters_add_type_to_properties_root_without_corrupting_properties_map() {
+        let mut schema = json!({
+            "properties": {
+                "path": {"type": "string"}
+            },
+            "required": ["path"]
+        });
+
+        sanitize_for_kimi_parameters(&mut schema);
+
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["path"]["type"], "string");
+        assert!(schema["properties"].get("type").is_none());
     }
 }

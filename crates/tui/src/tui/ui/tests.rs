@@ -3554,12 +3554,12 @@ fn ctrl_alt_4_focuses_agents_sidebar_without_switching_modes() {
 }
 
 #[test]
-fn hotbar_bare_digit_fires_only_when_composer_empty() {
+fn hotbar_bare_digit_inserts_text_even_when_composer_empty() {
     let mut app = create_test_app();
     app.onboarding = OnboardingState::None;
 
     let bare_four = KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE);
-    assert_eq!(hotbar_slot_from_key(&app, &bare_four), Some(4));
+    assert_eq!(hotbar_slot_from_key(&app, &bare_four), None);
 
     app.input = "draft".to_string();
     assert_eq!(hotbar_slot_from_key(&app, &bare_four), None);

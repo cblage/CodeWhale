@@ -4676,10 +4676,6 @@ fn hotbar_slot_from_key(app: &App, key: &event::KeyEvent) -> Option<u8> {
     }
     let slot = c.to_digit(10).and_then(|digit| u8::try_from(digit).ok())?;
 
-    if key.modifiers == KeyModifiers::NONE {
-        return app.input.is_empty().then_some(slot);
-    }
-
     if key.modifiers.contains(KeyModifiers::ALT)
         && !key.modifiers.contains(KeyModifiers::CONTROL)
         && !key.modifiers.contains(KeyModifiers::SUPER)
@@ -5704,6 +5700,7 @@ fn paused_command_note(title: &str, resume: bool) -> String {
     };
     format!(
         "\n\nCodeWhale paused custom slash command context:\n\
+Paused custom slash command: {title}\n\
 Paused command: {title}\n\
 {instruction}"
     )
@@ -10062,6 +10059,9 @@ fn activity_detail_text(app: &App, cell_index: usize, width: u16) -> Option<Stri
     if let Some(handle) = activity_detail_handle_line(app, cell_index, cell) {
         sections.push(handle);
     }
+    if let Some(summary) = activity_input_summary_line(cell) {
+        sections.push(summary);
+    }
 
     sections.push(String::new());
     sections.push(activity_cell_to_text(cell, width));
@@ -10365,6 +10365,18 @@ fn activity_detail_handle_line(app: &App, cell_index: usize, cell: &HistoryCell)
         HistoryCell::Tool(_) => Some("Detail handle: Alt+V details".to_string()),
         HistoryCell::SubAgent(_) => Some("Detail handle: Alt+V details".to_string()),
         _ => None,
+    }
+}
+
+fn activity_input_summary_line(cell: &HistoryCell) -> Option<String> {
+    let HistoryCell::Tool(ToolCell::Generic(generic)) = cell else {
+        return None;
+    };
+    let summary = generic.input_summary.as_deref()?.trim();
+    if summary.is_empty() {
+        None
+    } else {
+        Some(format!("Input: {summary}"))
     }
 }
 

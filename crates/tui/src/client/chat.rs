@@ -140,7 +140,7 @@ impl DeepSeekClient {
                         .and_then(|t| t.get_mut("function"))
                         .and_then(|f| f.get_mut("parameters"))
                     {
-                        crate::tools::schema_sanitize::sanitize_for_kimi(fn_obj);
+                        crate::tools::schema_sanitize::sanitize_for_kimi_parameters(fn_obj);
                     }
                 }
             }
@@ -263,7 +263,7 @@ impl DeepSeekClient {
                         .and_then(|t| t.get_mut("function"))
                         .and_then(|f| f.get_mut("parameters"))
                     {
-                        crate::tools::schema_sanitize::sanitize_for_kimi(fn_obj);
+                        crate::tools::schema_sanitize::sanitize_for_kimi_parameters(fn_obj);
                     }
                 }
             }
