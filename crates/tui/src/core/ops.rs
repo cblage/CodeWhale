@@ -75,6 +75,16 @@ pub enum Op {
         approval_mode: ApprovalMode,
     },
 
+    /// Set the runtime goal status without dispatching a model turn. Used by
+    /// `/goal pause`, `/goal resume`, `/goal clear`, etc. so the engine's
+    /// `SharedGoalState` learns the new status immediately and a queued
+    /// continuation doesn't overwrite it back to Active.
+    SetGoalStatus {
+        status: GoalStatus,
+        /// When `true`, clear the objective entirely (`/goal clear`).
+        clear: bool,
+    },
+
     /// Cancel the current request
     #[allow(dead_code)]
     CancelRequest,

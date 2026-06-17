@@ -6769,6 +6769,11 @@ async fn apply_command_result(
                 let queued = build_queued_message(app, content);
                 submit_or_steer_message(app, config, engine_handle, queued).await?;
             }
+            AppAction::SetGoalStatus { status, clear } => {
+                let _ = engine_handle
+                    .send(Op::SetGoalStatus { status, clear })
+                    .await;
+            }
             AppAction::VoiceCapture => {
                 use commands::voice::VoiceCaptureOutcome;
                 match commands::voice::capture_and_transcribe(app, config).await {

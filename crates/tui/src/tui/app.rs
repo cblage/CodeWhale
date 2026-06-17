@@ -5439,6 +5439,13 @@ pub enum AppAction {
     },
     /// Send a message to the AI (normal chat mode).
     SendMessage(String),
+    /// Update the runtime goal status (`/goal pause|resume|clear|…`) without
+    /// dispatching a model turn. The UI layer translates this into
+    /// `Op::SetGoalStatus`.
+    SetGoalStatus {
+        status: crate::tools::goal::GoalStatus,
+        clear: bool,
+    },
     ListSubAgents,
     FetchModels,
     CacheWarmup,

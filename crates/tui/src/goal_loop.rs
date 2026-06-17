@@ -10,16 +10,12 @@
 //! the loop that fans work out to workers (`worker_profile`) and verifies before
 //! committing.
 //!
-//! Scope: **foundation only**. This module is pure decision logic + types with
-//! tests; it does NOT yet drive the engine. Today the continuation hook lives
-//! inline in `core/engine/turn_loop.rs` (`goal_continuation_message_if_needed`,
-//! capped at 3 passes per turn and reset each turn). Wiring this loop in — so a
-//! goal persists across turns, reads/writes the durable `ThreadGoal`, and
-//! enforces the budget circuit-breaker — is the follow-up that makes goal mode
-//! real (#3215). Keeping the decision logic here, pure and tested, lets that
-//! wiring be a thin, low-risk change.
-
-#![allow(dead_code)] // foundation: the engine consumes this in a follow-up (#3215).
+//! Scope: **decision logic + types**. The engine (`core/engine.rs`) reads the
+//! `SharedGoalState` snapshot after each turn and calls `decide_continuation`
+//! to decide whether to re-dispatch. There is **no continuation cap** — a goal
+//! runs until the model self-reports complete/blocked, the user pauses or
+//! clears, or an optional token/time budget is exhausted. This matches how a
+//! persistent objective should feel: "until done," not "until N turns."
 
 /// Terminal or active state of a persistent goal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +26,7 @@ pub enum GoalRunStatus {
     /// verifier confirmed — see `GoalGate`).
     Completed,
     /// The model reported it is blocked and needs the user.
+    #[allow(dead_code)]
     Blocked,
 }
 
@@ -39,13 +36,17 @@ pub enum StopReason {
     /// Objective achieved.
     Completed,
     /// Model reported blocked.
+    #[allow(dead_code)]
     Blocked,
     /// Token budget exhausted.
     TokenBudget,
     /// Wall-clock budget exhausted.
     TimeBudget,
     /// Continuation circuit-breaker tripped (too many continuations without a
-    /// terminal signal) — prevents a runaway loop.
+    /// terminal signal). Retained for API completeness; the current loop has no
+    /// continuation cap, so this variant is not constructed by
+    /// `decide_continuation`.
+    #[allow(dead_code)]
     ContinuationLimit,
 }
 
@@ -59,23 +60,34 @@ pub struct GoalProgress {
     pub continuations: u32,
 }
 
-/// The bound on a goal run. `None` fields are unbounded. `max_continuations` is
-/// the safety circuit-breaker that always applies.
+/// The bound on a goal run. `None` fields mean unbounded. There is **no
+/// continuation cap** — the loop runs until the model self-reports
+/// complete/blocked, the user pauses/clears, or an optional budget is
+/// exhausted. This is deliberate: a goal is "until done," not "until N turns."
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GoalBudget {
     pub token_budget: Option<u64>,
     pub time_budget_seconds: Option<u64>,
-    pub max_continuations: u32,
 }
 
 impl GoalBudget {
-    /// A sensible default circuit-breaker for an unattended persistent loop:
-    /// no token/time cap, but bounded continuations so it cannot run away.
-    pub const fn with_continuation_cap(max_continuations: u32) -> Self {
+    /// Fully unbounded — no token or time cap. The only stops are a terminal
+    /// model status (complete/blocked) or an explicit user pause/clear.
+    #[allow(dead_code)]
+    pub const fn unbounded() -> Self {
         Self {
             token_budget: None,
             time_budget_seconds: None,
-            max_continuations,
+        }
+    }
+
+    /// A token budget only — the loop runs until the model is done or the
+    /// token budget is exhausted.
+    #[allow(dead_code)]
+    pub const fn with_token_budget(token_budget: u64) -> Self {
+        Self {
+            token_budget: Some(token_budget),
+            time_budget_seconds: None,
         }
     }
 }
@@ -93,12 +105,11 @@ pub enum ContinuationDecision {
 ///
 /// Precedence (most authoritative first):
 /// 1. A terminal model status (Completed / Blocked) ends the run.
-/// 2. Budget/circuit-breaker limits end the run (so an Active-but-over-budget
-///    run cannot continue).
+/// 2. An optional token or time budget, if exhausted, ends the run.
 /// 3. Otherwise continue.
 ///
-/// `max_continuations` is checked as a hard breaker even when no token/time
-/// budget is set — a persistent loop must never spin forever.
+/// There is **no continuation cap**. A goal runs until the model reports
+/// done/blocked, the user pauses or clears, or an optional budget is spent.
 #[must_use]
 pub fn decide_continuation(
     status: GoalRunStatus,
@@ -112,10 +123,7 @@ pub fn decide_continuation(
         GoalRunStatus::Active => {}
     }
 
-    // 2. Budget / circuit-breaker. Continuation cap first (always applies).
-    if progress.continuations >= budget.max_continuations {
-        return ContinuationDecision::Stop(StopReason::ContinuationLimit);
-    }
+    // 2. Optional budget. No continuation cap — "until done."
     if let Some(tokens) = budget.token_budget
         && progress.tokens_used >= tokens
     {
@@ -134,6 +142,7 @@ pub fn decide_continuation(
 /// Whether a stop reason represents success (Completed) vs. an early/forced exit.
 /// Useful for the UI/status projection (#2666 token/time visibility).
 #[must_use]
+#[allow(dead_code)]
 pub fn is_success(reason: StopReason) -> bool {
     matches!(reason, StopReason::Completed)
 }
@@ -142,16 +151,12 @@ pub fn is_success(reason: StopReason) -> bool {
 mod tests {
     use super::*;
 
-    fn unbounded(continuations_cap: u32) -> GoalBudget {
-        GoalBudget::with_continuation_cap(continuations_cap)
-    }
-
     #[test]
     fn completed_status_stops_with_success() {
         let d = decide_continuation(
             GoalRunStatus::Completed,
             GoalProgress::default(),
-            unbounded(100),
+            GoalBudget::unbounded(),
         );
         assert_eq!(d, ContinuationDecision::Stop(StopReason::Completed));
         assert!(is_success(StopReason::Completed));
@@ -162,7 +167,7 @@ mod tests {
         let d = decide_continuation(
             GoalRunStatus::Blocked,
             GoalProgress::default(),
-            unbounded(100),
+            GoalBudget::unbounded(),
         );
         assert_eq!(d, ContinuationDecision::Stop(StopReason::Blocked));
         assert!(!is_success(StopReason::Blocked));
@@ -178,7 +183,6 @@ mod tests {
         let budget = GoalBudget {
             token_budget: Some(1000),
             time_budget_seconds: Some(600),
-            max_continuations: 50,
         };
         assert_eq!(
             decide_continuation(GoalRunStatus::Active, progress, budget),
@@ -187,14 +191,17 @@ mod tests {
     }
 
     #[test]
-    fn continuation_cap_breaks_a_runaway_loop_even_when_unbounded() {
+    fn active_with_no_budget_continues_indefinitely() {
+        // No continuation cap: a high continuation count with no token/time
+        // budget must still Continue. The loop is "until done," not "until N."
         let progress = GoalProgress {
-            continuations: 8,
+            continuations: 1_000_000,
             ..GoalProgress::default()
         };
-        // No token/time budget set, but the circuit-breaker still trips.
-        let d = decide_continuation(GoalRunStatus::Active, progress, unbounded(8));
-        assert_eq!(d, ContinuationDecision::Stop(StopReason::ContinuationLimit));
+        assert_eq!(
+            decide_continuation(GoalRunStatus::Active, progress, GoalBudget::unbounded()),
+            ContinuationDecision::Continue
+        );
     }
 
     #[test]
@@ -204,11 +211,7 @@ mod tests {
             continuations: 1,
             ..GoalProgress::default()
         };
-        let budget = GoalBudget {
-            token_budget: Some(1000),
-            time_budget_seconds: None,
-            max_continuations: 100,
-        };
+        let budget = GoalBudget::with_token_budget(1000);
         assert_eq!(
             decide_continuation(GoalRunStatus::Active, progress, budget),
             ContinuationDecision::Stop(StopReason::TokenBudget)
@@ -225,7 +228,6 @@ mod tests {
         let budget = GoalBudget {
             token_budget: None,
             time_budget_seconds: Some(600),
-            max_continuations: 100,
         };
         assert_eq!(
             decide_continuation(GoalRunStatus::Active, progress, budget),
@@ -240,7 +242,6 @@ mod tests {
         let budget = GoalBudget {
             token_budget: Some(1_000_000),
             time_budget_seconds: Some(86_400),
-            max_continuations: 1000,
         };
         assert_eq!(
             decide_continuation(GoalRunStatus::Completed, progress, budget),

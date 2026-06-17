@@ -133,30 +133,62 @@ Switch mid-session with `/provider` and `/model`. The full registry —
 credentials, base URLs, capability boundaries — lives in
 [docs/PROVIDERS.md](docs/PROVIDERS.md).
 
-## What makes it agentic
+## What makes CodeWhale different
 
-A lot of "agents" will read a file, suggest a change, and stop — leaving you to
-apply it, run it, and find out it was wrong. CodeWhale is built to go further:
+As a project evolves, the instructions pile up and they inevitably conflict: the
+original spec, a later refactor that contradicts it, stale memory, a previous
+agent's handoff, your current request, and fresh test output that doesn't match
+what the handoff claimed. A flat system prompt makes the model resolve that by
+guess. CodeWhale uses a **nested constitution** so there's a defined rank instead
+of vibes.
 
-- **It plans before it acts.** Multi-step work gets a real plan and a checklist,
-  not a stream of guesses. You can see the plan, adjust it, and watch it update.
-- **It verifies its own work.** After writing a file, it reads it back. After
-  running a test, it looks at the output. A failure is evidence it adapts to,
-  not a dead end it reports and forgets.
-- **It runs long tasks.** Sessions persist across restarts and system sleep.
-  A task that takes forty tool calls survives the forty-first.
-- **It fans out sub-agents.** Independent investigations run in parallel — up
-  to 20 at once — so a broad question gets answered by several focused reads,
-  not one slow sequential pass.
-- **It undoes cleanly.** Side-git snapshots and `/restore`, kept outside your
-  repo's `.git`. When a turn goes wrong, you roll it back without touching your
-  history.
+The system prompt is layered, most-static first, and the order is enforced in
+code (there are tests asserting it can't drift):
 
-The safety rails are real mechanisms, not advice the model has to remember:
-approval gates, OS sandboxing (bwrap, Landlock, Seatbelt, seccomp), and a
-`.codewhale/hooks.toml` hook system that can allow, deny, or ask before any tool
-call. You decide how much autonomy to grant — Plan mode is read-only by default,
-Agent mode asks per action, YOLO auto-approves.
+1. **Global constitution** — the base law, compiled into every binary. Its
+   priority article fixes the authority order for any conflict.
+2. **Your project's law** — drop a `.codewhale/constitution.json` in a repo to
+   declare `protected_invariants`, `branch_policy`, `verification_policy`, and
+   `escalate_when`. It's loaded as its own authority block, above memory and
+   handoffs.
+3. **Your current request** — the operative instruction this turn.
+4. **Live evidence** — what the tools actually returned. Ground truth; the model
+   may be ordered past it, but it may never report a fact that isn't there.
+
+When two instructions conflict, each yields to the one above. The model isn't
+renegotiating the stack each turn — the order is fixed, so it can act on the
+mountain of overlapping context without being paralyzed or quietly wrong. And
+because the law lives in the harness, not the model, swapping models keeps the
+structure intact.
+
+## Features
+
+- **Three modes.** Plan (read-only investigation), Agent (executes, asks per
+  action), YOLO (auto-approve). Switch with `Tab` or `/mode`.
+- **Persistent goal loop.** Set an objective with `/goal` and the agent keeps
+  working across turns — reading, editing, running, checking results — until the
+  goal is done, it's blocked, or you stop it. No turn cap. `/task` tracks
+  background tasks; the Work sidebar shows live plan and checklist state.
+- **Sub-agents.** Independent investigations and implementation slices run in
+  parallel — up to 20 at once — each with its own clean context and
+  provider-aware model tier (big vs. cheap).
+- **25 providers.** DeepSeek, GLM, Claude, GPT, Kimi, MiniMax, OpenRouter, and
+  local vLLM/SGLang/Ollama, all behind the same harness and tools. Switch
+  mid-session with `/provider` and `/model`.
+- **Rollback.** Side-git snapshots and `/restore`, kept outside your repo's
+  `.git` — undoing a turn never touches your history.
+- **Sandboxing & approval gates.** OS sandboxing (bwrap, Landlock, Seatbelt,
+  seccomp) and a `.codewhale/hooks.toml` hook system that can allow, deny, or ask
+  before any tool call.
+- **Durable sessions.** Persist across restarts and system sleep; a task that
+  takes forty tool calls survives the forty-first.
+- **Headless mode.** `codewhale exec` with `--allowed-tools`, `--disallowed-tools`
+  (deny wins), `--max-turns`, and `--append-system-prompt` for scripts and CI.
+- **MCP, bidirectionally.** Consume tools from external servers, or expose
+  CodeWhale itself as an MCP server via `codewhale mcp`.
+- **Skills.** Reusable workflows in `~/.codewhale/skills/`, loaded with `/skills`.
+- **Embedded everywhere.** HTTP/SSE and ACP runtime APIs, a VS Code extension,
+  and Telegram/Feishu bridges (Weixin experimental).
 
 ## The project
 

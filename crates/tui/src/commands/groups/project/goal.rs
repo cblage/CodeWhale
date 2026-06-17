@@ -2,6 +2,7 @@
 
 use std::io::Write;
 
+use crate::tools::goal::GoalStatus;
 use crate::tui::app::{App, AppAction, HuntVerdict};
 
 use super::CommandResult;
@@ -17,15 +18,23 @@ pub fn hunt(app: &mut App, arg: Option<&str>) -> CommandResult {
             app.hunt.continuation_count = 0;
             app.hunt.started_at = None;
             app.hunt.verdict = HuntVerdict::default();
-            CommandResult::message("Goal cleared.")
+            CommandResult::with_message_and_action(
+                "Goal cleared.",
+                AppAction::SetGoalStatus {
+                    status: GoalStatus::Active,
+                    clear: true,
+                },
+            )
         }
-        Some("done") | Some("complete") | Some("hunted") => close_hunt(app, HuntVerdict::Hunted),
+        Some("done") | Some("complete") | Some("hunted") => {
+            close_hunt(app, HuntVerdict::Hunted, GoalStatus::Complete)
+        }
         Some("pause") | Some("paused") | Some("wound") | Some("wounded") => {
-            close_hunt(app, HuntVerdict::Wounded)
+            close_hunt(app, HuntVerdict::Wounded, GoalStatus::Paused)
         }
         Some("resume") | Some("continue") => resume_hunt(app),
         Some("block") | Some("blocked") | Some("escape") | Some("escaped") => {
-            close_hunt(app, HuntVerdict::Escaped)
+            close_hunt(app, HuntVerdict::Escaped, GoalStatus::Blocked)
         }
         Some(text) if !text.is_empty() => {
             let (objective, budget) = parse_hunt_budget(text);
@@ -98,7 +107,7 @@ pub fn hunt(app: &mut App, arg: Option<&str>) -> CommandResult {
     }
 }
 
-fn close_hunt(app: &mut App, verdict: HuntVerdict) -> CommandResult {
+fn close_hunt(app: &mut App, verdict: HuntVerdict, status: GoalStatus) -> CommandResult {
     if app.hunt.quarry.as_deref().is_none_or(str::is_empty) {
         return CommandResult::error("No goal set. Use /goal <objective> [budget: N] first.");
     }
@@ -114,6 +123,14 @@ fn close_hunt(app: &mut App, verdict: HuntVerdict) -> CommandResult {
     }
     app.hunt.verdict = verdict;
 
+    // Push the new status to the engine's SharedGoalState so the cross-turn
+    // continuation loop respects it: pause/blocked stops the loop, complete
+    // ends it, resume restarts it.
+    let action = AppAction::SetGoalStatus {
+        status,
+        clear: false,
+    };
+
     match verdict {
         HuntVerdict::Hunted => {
             let elapsed = app
@@ -121,13 +138,17 @@ fn close_hunt(app: &mut App, verdict: HuntVerdict) -> CommandResult {
                 .started_at
                 .map(|t| crate::tui::notifications::humanize_duration(t.elapsed()))
                 .unwrap_or_else(|| "unknown".to_string());
-            CommandResult::message(format!("Goal complete. Elapsed: {elapsed}"))
+            CommandResult::with_message_and_action(
+                format!("Goal complete. Elapsed: {elapsed}"),
+                action,
+            )
         }
-        HuntVerdict::Wounded => {
-            CommandResult::message("Goal paused. Progress is saved; use /goal resume to continue.")
-        }
-        HuntVerdict::Escaped => CommandResult::message("Goal blocked."),
-        HuntVerdict::Hunting => CommandResult::message("Goal resumed."),
+        HuntVerdict::Wounded => CommandResult::with_message_and_action(
+            "Goal paused. Progress is saved; use /goal resume to continue.",
+            action,
+        ),
+        HuntVerdict::Escaped => CommandResult::with_message_and_action("Goal blocked.", action),
+        HuntVerdict::Hunting => CommandResult::with_message_and_action("Goal resumed.", action),
     }
 }
 
@@ -401,7 +422,14 @@ mod tests {
         let _ = hunt(&mut app, Some("Finish release prep"));
 
         let paused = hunt(&mut app, Some("pause"));
-        assert!(paused.action.is_none());
+        // Pause now dispatches SetGoalStatus to push Paused into SharedGoalState.
+        assert!(matches!(
+            paused.action,
+            Some(AppAction::SetGoalStatus {
+                status: crate::tools::goal::GoalStatus::Paused,
+                clear: false
+            })
+        ));
         assert_eq!(app.hunt.verdict, HuntVerdict::Wounded);
         assert_eq!(
             app.hunt.verdict.goal_status(),

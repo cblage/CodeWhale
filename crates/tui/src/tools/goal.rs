@@ -17,13 +17,11 @@ use crate::tools::spec::{
 };
 
 /// Maximum number of automatic goal-continuation prompt injections in one
-/// engine turn. This prevents a missing `update_goal` call from becoming an
-/// unbounded local loop.
+/// engine turn. This is intra-turn granularity only — it prevents a stuck spin
+/// within a single turn from making no progress. The cross-turn loop has **no
+/// cap**: a goal runs until complete/blocked/paused, or an optional budget is
+/// exhausted. See `goal_loop::decide_continuation`.
 pub const MAX_GOAL_CONTINUATIONS_PER_TURN: u32 = 3;
-
-/// Durable run-level continuation circuit-breaker. Unlike the per-turn cap,
-/// this count is meant to survive turn boundaries through `ThreadGoal`.
-pub const MAX_GOAL_CONTINUATIONS_PER_RUN: u32 = 30;
 
 /// Shared reference to the current runtime goal.
 pub type SharedGoalState = Arc<Mutex<GoalState>>;
@@ -88,6 +86,11 @@ impl GoalState {
     #[must_use]
     pub fn objective(&self) -> Option<&str> {
         self.objective.as_deref()
+    }
+
+    #[must_use]
+    pub fn token_budget(&self) -> Option<u32> {
+        self.token_budget
     }
 
     #[must_use]
@@ -276,21 +279,17 @@ pub fn thread_goal_status_as_goal_status(
     }
 }
 
-/// Render the bounded continuation prompt injected when a goal is still active
-/// after an assistant message has no tool calls.
+/// Render the continuation prompt injected when a goal is still active after a
+/// turn. There is no run-level cap, so this shows progress (turn count, tokens)
+/// rather than a "N/max" meter — the loop runs until done, blocked, or paused.
 #[must_use]
-pub fn render_continuation_prompt(
-    snapshot: &GoalSnapshot,
-    continuation_index: u32,
-    max_continuations: u32,
-) -> String {
+pub fn render_continuation_prompt(snapshot: &GoalSnapshot, continuation_index: u32) -> String {
     let goal_json = serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| "{}".to_string());
     format!(
-        "{}\n\n## Active Goal State\n\n```json\n{}\n```\n\nContinuation pass: {}/{}.\nIf the goal is complete, first run or cite a concrete verifier/check, then call `update_goal` with `status: \"complete\"`, concrete evidence, and `verification: {{\"status\":\"passed\",\"check\":\"...\",\"summary\":\"...\"}}`. If it is blocked, call `update_goal` with `status: \"blocked\"` and the blocker. Otherwise continue making progress toward the objective.",
+        "{}\n\n## Active Goal State\n\n```json\n{}\n```\n\nContinuation pass #{}.\nIf the goal is complete, first run or cite a concrete verifier/check, then call `update_goal` with `status: \"complete\"`, concrete evidence, and `verification: {{\"status\":\"passed\",\"check\":\"...\",\"summary\":\"...\"}}`. If it is blocked, call `update_goal` with `status: \"blocked\"` and the blocker. Otherwise continue making progress toward the objective.",
         crate::prompts::GOAL_CONTINUATION_PROMPT.trim(),
         goal_json,
         continuation_index,
-        max_continuations,
     )
 }
 
@@ -773,9 +772,9 @@ mod tests {
             completion_verification: None,
         };
 
-        let prompt = render_continuation_prompt(&snapshot, 2, 3);
+        let prompt = render_continuation_prompt(&snapshot, 2);
         assert!(prompt.contains("Goal Continuation"));
         assert!(prompt.contains("finish issue 2199"));
-        assert!(prompt.contains("Continuation pass: 2/3"));
+        assert!(prompt.contains("Continuation pass #2"));
     }
 }

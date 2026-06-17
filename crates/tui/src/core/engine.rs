@@ -510,6 +510,9 @@ pub struct Engine {
     mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
     api_provider: ApiProvider,
     rx_op: mpsc::Receiver<Op>,
+    /// Clone of the op-channel sender, so the engine can self-dispatch ops
+    /// (e.g. a goal-continuation `SendMessage` after a turn completes).
+    tx_op: mpsc::Sender<Op>,
     rx_approval: mpsc::Receiver<ApprovalDecision>,
     rx_user_input: mpsc::Receiver<UserInputDecision>,
     rx_steer: mpsc::Receiver<String>,
@@ -900,6 +903,7 @@ impl Engine {
             mcp_pool: None,
             api_provider,
             rx_op,
+            tx_op: tx_op.clone(),
             rx_approval,
             rx_user_input,
             rx_steer,
@@ -1260,6 +1264,9 @@ impl Engine {
                             approval_mode,
                         )
                         .await;
+                    }
+                    Op::SetGoalStatus { status, clear } => {
+                        self.handle_set_goal_status(status, clear).await;
                     }
                     Op::CancelRequest => {
                         self.cancel_token.cancel();
@@ -1724,6 +1731,97 @@ impl Engine {
 
     /// Handle a send message operation
     #[allow(clippy::too_many_arguments)]
+    /// After a turn completes, check whether an active goal should keep going.
+    /// Returns a continuation message to re-dispatch as a new turn, or `None`
+    /// if the goal is complete, blocked, paused, or over an optional budget.
+    ///
+    /// There is no continuation cap — a goal runs until the model self-reports
+    /// done/blocked, the user pauses or clears, or an optional token/time
+    /// budget is exhausted. The loop is "until done," not "until N turns."
+    fn goal_continuation_if_active(&self) -> Option<String> {
+        let snapshot = self.config.goal_state.lock().ok()?.snapshot();
+        if !snapshot.is_active() {
+            return None;
+        }
+
+        // The snapshot status is a string ("active", "paused", "complete",
+        // "blocked"). Map it to the goal-loop decision core's status enum.
+        let status = match snapshot.status.as_str() {
+            "active" => crate::goal_loop::GoalRunStatus::Active,
+            "complete" => crate::goal_loop::GoalRunStatus::Completed,
+            // Paused / Blocked / unknown → no continuation.
+            _ => return None,
+        };
+
+        let decision = crate::goal_loop::decide_continuation(
+            status,
+            crate::goal_loop::GoalProgress {
+                tokens_used: snapshot.tokens_used,
+                time_used_seconds: snapshot.time_used_seconds,
+                continuations: snapshot.continuation_count,
+            },
+            crate::goal_loop::GoalBudget {
+                token_budget: snapshot.token_budget.map(u64::from),
+                time_budget_seconds: None,
+            },
+        );
+
+        match decision {
+            crate::goal_loop::ContinuationDecision::Continue => {
+                Some(crate::tools::goal::render_continuation_prompt(
+                    &snapshot,
+                    snapshot.continuation_count,
+                ))
+            }
+            // All stop reasons → no continuation. The caller (the async turn
+            // completion path) emits a status message for budget-exhaustion.
+            crate::goal_loop::ContinuationDecision::Stop(reason) => {
+                tracing::info!(?reason, "goal continuation stopped");
+                None
+            }
+        }
+    }
+
+    /// Handle `/goal pause|resume|clear|complete|blocked` by writing the new
+    /// status to `SharedGoalState` so the cross-turn continuation loop respects
+    /// it. This does NOT dispatch a model turn — it's a control-plane update.
+    async fn handle_set_goal_status(&mut self, status: GoalStatus, clear: bool) {
+        match self.config.goal_state.lock() {
+            Ok(mut state) => {
+                if clear {
+                    // `/goal clear` — wipe the objective entirely.
+                    state.sync_from_host_status(None, None, GoalStatus::Active);
+                } else {
+                    // Update only the status; keep the objective and budget.
+                    // `sync_from_host_status` resets usage when the objective
+                    // changes, but here we pass the existing objective so usage
+                    // is preserved (pause/resume shouldn't reset the counter).
+                    let objective = state.objective().map(str::to_string);
+                    let budget = state.token_budget();
+                    state.sync_from_host_status(objective.as_deref(), budget, status);
+                }
+            }
+            Err(err) => {
+                tracing::warn!("goal state lock poisoned during SetGoalStatus: {err}");
+            }
+        }
+        let label = if clear {
+            "cleared"
+        } else {
+            match status {
+                GoalStatus::Active => "resumed",
+                GoalStatus::Paused => "paused",
+                GoalStatus::Complete => "complete",
+                GoalStatus::Blocked => "blocked",
+            }
+        };
+        let _ = self
+            .tx_event
+            .send(Event::status(format!("Goal {label}.")))
+            .await;
+        self.emit_goal_updated().await;
+    }
+
     async fn handle_send_message(
         &mut self,
         content: String,
@@ -2131,6 +2229,47 @@ impl Engine {
                     Some(&snapshot_prompt_post),
                 );
             });
+        }
+
+        // ── Cross-turn goal continuation ───────────────────────────────────
+        // If the turn completed successfully and a goal is still Active (and
+        // under any optional budget), re-dispatch a synthetic continuation
+        // message back into the engine's own op channel. This makes `/goal` a
+        // persistent loop that runs until the model self-reports complete or
+        // blocked, the user pauses/clears, or an optional budget is exhausted.
+        // There is no continuation cap. A Failed or Interrupted turn does NOT
+        // continue — Esc cancels the loop by interrupting the turn.
+        if status == TurnOutcomeStatus::Completed {
+            if let Some(continuation) = self.goal_continuation_if_active() {
+                // Re-dispatch with the same route/mode/approval settings as
+                // the prior turn. The non-Copy values were moved into
+                // `self.config` / `self.session` earlier in this function, so
+                // we clone them back out here.
+                let _ = self
+                    .tx_op
+                    .send(Op::SendMessage {
+                        content: continuation,
+                        mode,
+                        provider,
+                        model: self.session.model.clone(),
+                        goal_objective: None,
+                        goal_token_budget: None,
+                        goal_status: GoalStatus::Active,
+                        reasoning_effort: self.session.reasoning_effort.clone(),
+                        reasoning_effort_auto,
+                        auto_model,
+                        allow_shell,
+                        trust_mode,
+                        auto_approve,
+                        approval_mode,
+                        translation_enabled,
+                        show_thinking,
+                        allowed_tools: self.config.allowed_tools.clone(),
+                        hook_executor: self.config.hook_executor.clone(),
+                        verbosity: self.config.verbosity.clone(),
+                    })
+                    .await;
+            }
         }
     }
 
