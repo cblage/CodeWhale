@@ -5,7 +5,6 @@ use std::time::Instant;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
 use crate::deepseek_theme::active_theme;
@@ -37,7 +36,7 @@ use checklist::{ChecklistChange, ChecklistItemSnapshot, ChecklistSnapshot};
 use constants::{
     ASSISTANT_GLYPH, TOOL_CARD_SUMMARY_LINES, TOOL_COMMAND_LINE_LIMIT, TOOL_DONE_SYMBOL,
     TOOL_FAILED_SYMBOL, TOOL_HEADER_SUMMARY_LIMIT, TOOL_OUTPUT_LINE_LIMIT, TOOL_RUNNING_SYMBOLS,
-    TOOL_STATUS_SYMBOL_MS, TOOL_TEXT_LIMIT, TRANSCRIPT_RAIL, USER_GLYPH,
+    TOOL_STATUS_SYMBOL_MS, TRANSCRIPT_RAIL, USER_GLYPH,
 };
 use message::{
     RenderedTranscriptLine, assistant_label_style_for, hard_break_copy_lines, message_body_style,
@@ -58,7 +57,10 @@ pub use tool_run::{ToolRun, detect_tool_runs, detect_tool_runs_from_slices, tool
 
 #[cfg(test)]
 use thinking::{REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL};
-pub use tool_output::OutputRow;
+pub(crate) use tool_output::output_looks_like_diff;
+pub use tool_output::{
+    OutputRow, summarize_mcp_output, summarize_tool_args, summarize_tool_output,
+};
 
 use std::process::Command;
 
@@ -1461,289 +1463,6 @@ fn render_spillover_annotation(path: &std::path::Path, width: u16) -> Line<'stat
         Span::styled(prefix, Style::default().fg(palette::TEXT_MUTED)),
         Span::styled(truncated, Style::default().fg(palette::TEXT_MUTED).italic()),
     ])
-}
-
-/// Heuristic: does the output look like a unified diff? Returns true when
-/// the output contains at least one hunk header (`@@`) or a `diff --git`
-/// line, which are reliable markers of unified diff content (#380).
-pub(crate) fn output_looks_like_diff(output: &str) -> bool {
-    let mut lines = output.lines();
-    // Check first 5 lines for diff markers
-    for _ in 0..5 {
-        let Some(line) = lines.next() else { break };
-        let trimmed = line.trim();
-        if trimmed.starts_with("@@") || trimmed.starts_with("diff --git") {
-            return true;
-        }
-    }
-    false
-}
-
-fn summarize_string_value(text: &str, max_len: usize, count_only: bool) -> String {
-    let trimmed = text.trim();
-    let len = trimmed.chars().count();
-    if count_only || len > max_len {
-        return format!("<{len} chars>");
-    }
-    truncate_text(trimmed, max_len)
-}
-
-fn summarize_inline_value(value: &Value, max_len: usize, count_only: bool) -> String {
-    match value {
-        Value::String(s) => summarize_string_value(s, max_len, count_only),
-        Value::Array(items) => format!("<{} items>", items.len()),
-        Value::Object(map) => format!("<{} keys>", map.len()),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(num) => num.to_string(),
-        Value::Null => "null".to_string(),
-    }
-}
-
-#[must_use]
-pub fn summarize_tool_args(input: &Value) -> Option<String> {
-    let obj = input.as_object()?;
-    if obj.is_empty() {
-        return None;
-    }
-
-    let mut parts = Vec::new();
-
-    if let Some(value) = obj.get("path") {
-        parts.push(format!(
-            "path: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("command") {
-        parts.push(format!(
-            "command: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("query") {
-        parts.push(format!(
-            "query: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("prompt") {
-        parts.push(format!(
-            "prompt: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("text") {
-        parts.push(format!(
-            "text: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("pattern") {
-        parts.push(format!(
-            "pattern: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("model") {
-        parts.push(format!(
-            "model: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("profile") {
-        parts.push(format!(
-            "profile: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("level") {
-        parts.push(format!(
-            "level: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("file_id") {
-        parts.push(format!(
-            "file_id: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("task_id") {
-        parts.push(format!(
-            "task_id: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("voice_id") {
-        parts.push(format!(
-            "voice_id: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("content") {
-        parts.push(format!(
-            "content: {}",
-            summarize_inline_value(value, 0, true)
-        ));
-    }
-
-    if parts.is_empty()
-        && let Some((key, value)) = obj.iter().next()
-    {
-        return Some(format!(
-            "{}: {}",
-            key,
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(", "))
-    }
-}
-
-#[must_use]
-pub fn summarize_tool_output(output: &str) -> String {
-    if let Ok(json) = serde_json::from_str::<Value>(output) {
-        if let Some(obj) = json.as_object() {
-            if let Some(error) = obj.get("error").or(obj.get("status_msg")) {
-                return format!("Error: {}", summarize_inline_value(error, 120, false));
-            }
-
-            let mut parts = Vec::new();
-
-            if let Some(status) = obj.get("status").and_then(|v| v.as_str()) {
-                parts.push(format!("status: {status}"));
-            }
-            if let Some(message) = obj.get("message").and_then(|v| v.as_str()) {
-                parts.push(truncate_text(message, TOOL_TEXT_LIMIT));
-            }
-            if let Some(task_id) = obj.get("task_id").and_then(|v| v.as_str()) {
-                parts.push(format!("task_id: {task_id}"));
-            }
-            if let Some(file_id) = obj.get("file_id").and_then(|v| v.as_str()) {
-                parts.push(format!("file_id: {file_id}"));
-            }
-            if let Some(url) = obj
-                .get("file_url")
-                .or_else(|| obj.get("url"))
-                .and_then(|v| v.as_str())
-            {
-                parts.push(format!("url: {}", truncate_text(url, 120)));
-            }
-            if let Some(data) = obj.get("data") {
-                parts.push(format!("data: {}", summarize_inline_value(data, 80, true)));
-            }
-
-            if !parts.is_empty() {
-                return parts.join(" | ");
-            }
-
-            if let Some(content) = obj
-                .get("content")
-                .or(obj.get("result"))
-                .or(obj.get("output"))
-            {
-                return summarize_inline_value(content, TOOL_TEXT_LIMIT, false);
-            }
-        }
-
-        return summarize_inline_value(&json, TOOL_TEXT_LIMIT, true);
-    }
-
-    truncate_text(output, TOOL_TEXT_LIMIT)
-}
-
-// === MCP Output Summaries ===
-
-/// Summary information extracted from an MCP tool output payload.
-pub struct McpOutputSummary {
-    pub content: Option<String>,
-    pub is_image: bool,
-    pub is_error: Option<bool>,
-}
-
-/// Summarize raw MCP output into UI-friendly content.
-#[must_use]
-pub fn summarize_mcp_output(output: &str) -> McpOutputSummary {
-    if let Ok(json) = serde_json::from_str::<Value>(output) {
-        let is_error = json
-            .get("isError")
-            .and_then(serde_json::Value::as_bool)
-            .or_else(|| json.get("is_error").and_then(serde_json::Value::as_bool));
-
-        if let Some(blocks) = json.get("content").and_then(|v| v.as_array()) {
-            let mut lines = Vec::new();
-            let mut is_image = false;
-
-            for block in blocks {
-                let block_type = block
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                match block_type {
-                    "text" => {
-                        let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                        if !text.is_empty() {
-                            lines.push(format!("- text: {}", truncate_text(text, 200)));
-                        }
-                    }
-                    "image" | "image_url" => {
-                        is_image = true;
-                        let url = block
-                            .get("url")
-                            .or_else(|| block.get("image_url"))
-                            .and_then(|v| v.as_str());
-                        if let Some(url) = url {
-                            lines.push(format!("- image: {}", truncate_text(url, 200)));
-                        } else {
-                            lines.push("- image".to_string());
-                        }
-                    }
-                    "resource" | "resource_link" => {
-                        let uri = block
-                            .get("uri")
-                            .or_else(|| block.get("url"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("<resource>");
-                        lines.push(format!("- resource: {}", truncate_text(uri, 200)));
-                    }
-                    other => {
-                        lines.push(format!("- {other} content"));
-                    }
-                }
-            }
-
-            return McpOutputSummary {
-                content: if lines.is_empty() {
-                    None
-                } else {
-                    Some(lines.join("\n"))
-                },
-                is_image,
-                is_error,
-            };
-        }
-    }
-
-    McpOutputSummary {
-        content: Some(summarize_tool_output(output)),
-        is_image: output_is_image(output),
-        is_error: None,
-    }
-}
-
-#[must_use]
-pub fn output_is_image(output: &str) -> bool {
-    let lower = output.to_lowercase();
-
-    [
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".ppm",
-    ]
-    .iter()
-    .any(|ext| lower.contains(ext))
 }
 
 fn render_command_mode(command: &str, width: u16, mode: RenderMode) -> Vec<Line<'static>> {
