@@ -445,6 +445,11 @@ fn validate_git_rev(rev: &str) -> Result<(), ToolError> {
             "git revision must not start with '-'".to_string(),
         ));
     }
+    if trimmed.chars().any(char::is_whitespace) {
+        return Err(ToolError::invalid_input(
+            "git revision must not contain whitespace".to_string(),
+        ));
+    }
     if trimmed
         .chars()
         .any(|ch| ch == '\0' || ch.is_ascii_control())
@@ -611,6 +616,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn git_show_rejects_whitespace_revision_payload() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path());
+        let err = GitShowTool
+            .execute(
+                json!({ "rev": "HEAD --output=/tmp/codewhale-git-show" }),
+                &ctx,
+            )
+            .await
+            .expect_err("whitespace rev payload should fail before git runs");
+        assert!(matches!(err, ToolError::InvalidInput { .. }));
+        assert!(err.to_string().contains("must not contain whitespace"));
+    }
+
+    #[tokio::test]
     async fn git_blame_reports_author_for_range() {
         if !git_available() {
             return;
@@ -657,6 +677,23 @@ mod tests {
             .expect_err("option-shaped rev should fail before git runs");
         assert!(matches!(err, ToolError::InvalidInput { .. }));
         assert!(err.to_string().contains("must not start with '-'"));
+    }
+
+    #[tokio::test]
+    async fn git_blame_rejects_whitespace_revision_payload() {
+        let tmp = tempdir().expect("tempdir");
+        let file = tmp.path().join("file.txt");
+        fs::write(&file, "one\n").expect("write");
+        let ctx = ToolContext::new(tmp.path());
+        let err = GitBlameTool
+            .execute(
+                json!({ "path": "file.txt", "rev": "HEAD --contents=/tmp/codewhale-git-blame" }),
+                &ctx,
+            )
+            .await
+            .expect_err("whitespace rev payload should fail before git runs");
+        assert!(matches!(err, ToolError::InvalidInput { .. }));
+        assert!(err.to_string().contains("must not contain whitespace"));
     }
 
     #[tokio::test]
