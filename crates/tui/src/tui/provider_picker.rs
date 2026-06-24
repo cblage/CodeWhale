@@ -266,7 +266,21 @@ pub enum ProviderReasoningStreamVisibility {
 
 impl ProviderDashboardRow {
     fn from_config(provider: ApiProvider, active: ApiProvider, config: &Config) -> Self {
-        let has_key = has_api_key_for(config, provider);
+        Self::from_config_with_provider_id(provider, active, config, None)
+    }
+
+    fn from_custom_config(provider_id: &str, active: ApiProvider, config: &Config) -> Self {
+        let mut scoped = config.clone();
+        scoped.provider = Some(provider_id.to_string());
+        Self::from_config_with_provider_id(ApiProvider::Custom, active, &scoped, Some(provider_id))
+    }
+
+    fn from_config_with_provider_id(
+        provider: ApiProvider,
+        active: ApiProvider,
+        config: &Config,
+        provider_id_override: Option<&str>,
+    ) -> Self {
         let configured = config.provider_config_for(provider);
         let configured_base_url = configured
             .and_then(|entry| entry.base_url.as_deref())
@@ -280,14 +294,34 @@ impl ProviderDashboardRow {
             .map(str::to_string);
         let has_configured_model = configured_model.is_some();
         let model_origin = ProviderModelOrigin::for_provider(provider, has_configured_model);
+        let has_key = if provider == ApiProvider::Custom {
+            custom_provider_has_auth(configured)
+        } else {
+            has_api_key_for(config, provider)
+        };
         let auth_status = auth_status_for(provider, has_key, configured);
         let usage_meter = usage_meter_for(provider);
+        let provider_id = provider_id_override
+            .map(str::to_string)
+            .unwrap_or_else(|| provider.as_str().to_string());
+        let display_name = provider_id_override
+            .map(|id| format!("{id} (custom)"))
+            .unwrap_or_else(|| provider.display_name().to_string());
+        let is_active = if provider == ApiProvider::Custom {
+            active == ApiProvider::Custom
+                && match provider_id_override {
+                    Some(id) => config.provider.as_deref() == Some(id),
+                    None => true,
+                }
+        } else {
+            provider == active
+        };
 
         let Some(kind) = provider.kind() else {
             return Self {
                 provider,
-                provider_id: provider.as_str().to_string(),
-                display_name: provider.display_name().to_string(),
+                provider_id,
+                display_name,
                 kind: "legacy".to_string(),
                 base_url: configured_base_url
                     .unwrap_or_else(|| provider.default_base_url().to_string()),
@@ -310,7 +344,7 @@ impl ProviderDashboardRow {
                     "legacy DeepSeek China alias; routing maps through DeepSeek compatibility"
                         .to_string(),
                 ],
-                is_active: provider == active,
+                is_active,
                 has_key,
             };
         };
@@ -376,7 +410,7 @@ impl ProviderDashboardRow {
             auth_status,
             ProviderAuthStatus::Missing | ProviderAuthStatus::OAuthMissing
         ) {
-            messages.push(format!("missing {}", provider.env_vars_label()));
+            messages.push(missing_auth_message(provider, configured, &provider_id));
         }
         if catalog_status == ProviderCatalogStatus::DefaultOnly {
             messages.push("catalog snapshot missing; using provider default".to_string());
@@ -388,9 +422,13 @@ impl ProviderDashboardRow {
 
         Self {
             provider,
-            provider_id: kind.as_str().to_string(),
-            display_name: provider.display_name().to_string(),
-            kind: format!("{kind:?}"),
+            provider_id,
+            display_name,
+            kind: configured
+                .and_then(|entry| entry.kind.as_deref())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{kind:?}")),
             base_url,
             auth_status,
             catalog_status,
@@ -404,7 +442,7 @@ impl ProviderDashboardRow {
             readiness,
             maturity: ProviderMaturity::for_provider(provider),
             messages,
-            is_active: provider == active,
+            is_active,
             has_key,
         }
     }
@@ -710,6 +748,15 @@ fn auth_status_for(
             ProviderAuthStatus::Optional
         };
     }
+    if provider == ApiProvider::Custom {
+        return if custom_provider_auth_is_optional(configured) {
+            ProviderAuthStatus::Optional
+        } else if has_key {
+            ProviderAuthStatus::Configured
+        } else {
+            ProviderAuthStatus::Missing
+        };
+    }
     if provider == ApiProvider::Moonshot && configured.is_some_and(config_uses_kimi_oauth) {
         return if has_key {
             ProviderAuthStatus::OAuthReady
@@ -749,6 +796,92 @@ fn has_explicit_credential(
                     .as_ref()
                     .is_some_and(|auth| auth.validate().is_ok())
         })
+}
+
+fn custom_provider_has_auth(configured: Option<&crate::config::ProviderConfig>) -> bool {
+    if custom_provider_auth_is_optional(configured) {
+        return true;
+    }
+    configured.is_some_and(|entry| {
+        entry
+            .api_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+            || entry
+                .api_key_env
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .is_some_and(|name| std::env::var(name).is_ok_and(|value| !value.trim().is_empty()))
+            || entry
+                .auth
+                .as_ref()
+                .is_some_and(|auth| auth.validate().is_ok())
+    })
+}
+
+fn custom_provider_auth_is_optional(configured: Option<&crate::config::ProviderConfig>) -> bool {
+    configured.is_some_and(|entry| {
+        entry
+            .auth_mode
+            .as_deref()
+            .is_some_and(auth_mode_disables_api_key)
+            || entry
+                .base_url
+                .as_deref()
+                .is_some_and(base_url_uses_local_host)
+    })
+}
+
+fn auth_mode_disables_api_key(mode: &str) -> bool {
+    matches!(
+        mode.trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' '], "_")
+            .as_str(),
+        "none" | "off" | "disabled" | "no_auth" | "noapi" | "no_api_key" | "anonymous"
+    )
+}
+
+fn base_url_uses_local_host(base_url: &str) -> bool {
+    let without_scheme = base_url
+        .split_once("://")
+        .map_or(base_url, |(_, rest)| rest);
+    let authority = without_scheme.split('/').next().unwrap_or_default();
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or(authority)
+        .trim_start_matches('[')
+        .split(']')
+        .next()
+        .unwrap_or(authority)
+        .split(':')
+        .next()
+        .unwrap_or(authority)
+        .to_ascii_lowercase();
+    matches!(host.as_str(), "localhost" | "0.0.0.0")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
+}
+
+fn missing_auth_message(
+    provider: ApiProvider,
+    configured: Option<&crate::config::ProviderConfig>,
+    provider_id: &str,
+) -> String {
+    if provider == ApiProvider::Custom {
+        if let Some(env_name) = configured
+            .and_then(|entry| entry.api_key_env.as_deref())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            return format!("missing {env_name} for custom provider {provider_id}");
+        }
+        return format!("missing custom provider auth for {provider_id}");
+    }
+    format!("missing {}", provider.env_vars_label())
 }
 
 fn config_uses_kimi_oauth(config: &crate::config::ProviderConfig) -> bool {
@@ -847,13 +980,23 @@ impl ProviderPickerView {
         // Present providers in the shared metadata display order (#3076). The
         // active provider is highlighted via `selected_idx` below, so it is
         // never lost in the list.
-        let rows: Vec<ProviderDashboardRow> = ApiProvider::sorted_for_display()
+        let custom_rows = custom_provider_dashboard_rows(active, config);
+        let mut rows: Vec<ProviderDashboardRow> = ApiProvider::sorted_for_display()
             .into_iter()
+            .filter(|provider| *provider != ApiProvider::Custom || custom_rows.is_empty())
             .map(|p| ProviderDashboardRow::from_config(p, active, config))
             .collect();
+        rows.extend(custom_rows);
+        rows.sort_by(|a, b| {
+            a.display_name
+                .to_ascii_lowercase()
+                .cmp(&b.display_name.to_ascii_lowercase())
+                .then_with(|| a.provider_id.cmp(&b.provider_id))
+        });
         let selected_idx = rows
             .iter()
-            .position(|row| row.provider == active)
+            .position(|row| row.is_active)
+            .or_else(|| rows.iter().position(|row| row.provider == active))
             .unwrap_or(0);
         Self {
             rows,
@@ -922,6 +1065,23 @@ impl ProviderPickerView {
 
     fn env_var_for(provider: ApiProvider) -> String {
         provider.env_vars_label()
+    }
+
+    fn env_var_for_selected_row(&self) -> String {
+        let row = &self.rows[self.selected_idx];
+        if row.provider == ApiProvider::Custom {
+            return row
+                .messages
+                .iter()
+                .find_map(|message| {
+                    message
+                        .strip_prefix("missing ")
+                        .and_then(|rest| rest.split_once(" for custom provider"))
+                        .map(|(env_name, _)| env_name.to_string())
+                })
+                .unwrap_or_else(|| format!("[providers.{}] api_key", row.provider_id));
+        }
+        Self::env_var_for(row.provider)
     }
 
     fn visible_start(&self, visible_rows: usize) -> usize {
@@ -1042,10 +1202,10 @@ impl ProviderPickerView {
     }
 
     fn render_key_entry(&self, area: Rect, buf: &mut Buffer) {
-        let provider = self.selected_provider();
+        let row = &self.rows[self.selected_idx];
         let outer = Block::default()
             .title(Line::from(Span::styled(
-                format!(" API key — {} ", provider.display_name()),
+                format!(" API key — {} ", row.display_name),
                 Style::default()
                     .fg(palette::DEEPSEEK_SKY)
                     .add_modifier(Modifier::BOLD),
@@ -1090,7 +1250,7 @@ impl ProviderPickerView {
 
         let hint = format!(
             "Or set the {} environment variable and re-open /provider.",
-            Self::env_var_for(provider),
+            self.env_var_for_selected_row(),
         );
         Paragraph::new(Line::from(Span::styled(
             hint,
@@ -1261,6 +1421,25 @@ impl ModalView for ProviderPickerView {
     }
 }
 
+fn custom_provider_dashboard_rows(
+    active: ApiProvider,
+    config: &Config,
+) -> Vec<ProviderDashboardRow> {
+    let Some(providers) = config.providers.as_ref() else {
+        return Vec::new();
+    };
+    let mut ids: Vec<_> = providers.custom.keys().cloned().collect();
+    ids.sort_by_key(|id| id.to_ascii_lowercase());
+    ids.into_iter()
+        .filter(|id| {
+            providers
+                .custom_provider_config(id)
+                .is_some_and(|entry| entry.is_openai_compatible_custom())
+        })
+        .map(|id| ProviderDashboardRow::from_custom_config(&id, active, config))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1284,6 +1463,17 @@ mod tests {
             // this module can concurrently mutate/read this provider key.
             unsafe {
                 env::remove_var(key);
+            }
+            Self { key, previous }
+        }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = env::var_os(key);
+            // SAFETY: provider-picker tests that mutate environment variables
+            // hold ENV_LOCK for the whole guard lifetime, so no sibling test in
+            // this module can concurrently mutate/read this provider key.
+            unsafe {
+                env::set_var(key, value);
             }
             Self { key, previous }
         }
@@ -1679,6 +1869,101 @@ mod tests {
         assert_eq!(row.default_route.logical_model, "custom-model");
         assert_eq!(row.default_route.wire_model, "custom-model");
         assert_eq!(row.supported_protocols, vec!["chat".to_string()]);
+    }
+
+    #[test]
+    fn provider_picker_lists_configured_custom_provider_readiness() {
+        let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+        let _example_key = EnvVarGuard::remove("EXAMPLE_API_KEY");
+        let mut custom = std::collections::HashMap::new();
+        custom.insert(
+            "my_thing".to_string(),
+            crate::config::ProviderConfig {
+                kind: Some("openai-compatible".to_string()),
+                base_url: Some("https://api.example.com/v1".to_string()),
+                model: Some("vendor/custom-model-v1".to_string()),
+                api_key_env: Some("EXAMPLE_API_KEY".to_string()),
+                ..Default::default()
+            },
+        );
+        let config = Config {
+            provider: Some("my_thing".to_string()),
+            providers: Some(crate::config::ProvidersConfig {
+                custom,
+                ..Default::default()
+            }),
+            ..Config::default()
+        };
+
+        let picker = ProviderPickerView::new(ApiProvider::Custom, &config);
+        let row = picker
+            .rows
+            .iter()
+            .find(|row| row.provider_id == "my_thing")
+            .expect("configured custom provider row");
+
+        assert_eq!(row.provider, ApiProvider::Custom);
+        assert_eq!(row.display_name, "my_thing (custom)");
+        assert_eq!(row.kind, "openai-compatible");
+        assert!(row.is_active);
+        assert_eq!(row.auth_status, ProviderAuthStatus::Missing);
+        assert_eq!(row.readiness, ProviderReadiness::NeedsAuth);
+        assert_eq!(row.base_url, "https://api.example.com/v1");
+        assert_eq!(row.supported_protocols, vec!["chat".to_string()]);
+        assert_eq!(row.default_route.logical_model, "vendor/custom-model-v1");
+        assert_eq!(row.default_route.wire_model, "vendor/custom-model-v1");
+        assert_eq!(row.model_origin, ProviderModelOrigin::Saved);
+        assert!(
+            row.messages
+                .iter()
+                .any(|message| message.contains("EXAMPLE_API_KEY")),
+            "custom row should name the configured auth env var: {:?}",
+            row.messages
+        );
+        assert_eq!(picker.rows[picker.selected_idx].provider_id, "my_thing");
+    }
+
+    #[test]
+    fn provider_picker_marks_custom_provider_ready_when_env_auth_is_set() {
+        let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+        let _example_key = EnvVarGuard::set("EXAMPLE_API_KEY", "sk-test");
+        let mut custom = std::collections::HashMap::new();
+        custom.insert(
+            "my_thing".to_string(),
+            crate::config::ProviderConfig {
+                kind: Some("openai-compatible".to_string()),
+                base_url: Some("https://api.example.com/v1".to_string()),
+                model: Some("custom-model-v1".to_string()),
+                api_key_env: Some("EXAMPLE_API_KEY".to_string()),
+                ..Default::default()
+            },
+        );
+        let config = Config {
+            provider: Some("my_thing".to_string()),
+            providers: Some(crate::config::ProvidersConfig {
+                custom,
+                ..Default::default()
+            }),
+            ..Config::default()
+        };
+
+        let picker = ProviderPickerView::new(ApiProvider::Custom, &config);
+        let row = picker
+            .rows
+            .iter()
+            .find(|row| row.provider_id == "my_thing")
+            .expect("configured custom provider row");
+
+        assert_eq!(row.auth_status, ProviderAuthStatus::Configured);
+        assert_eq!(row.readiness, ProviderReadiness::Ready);
+        assert!(row.has_key);
+        assert!(
+            !row.messages
+                .iter()
+                .any(|message| message.contains("EXAMPLE_API_KEY")),
+            "configured custom auth should not report missing env var: {:?}",
+            row.messages
+        );
     }
 
     #[test]

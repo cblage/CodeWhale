@@ -1470,6 +1470,24 @@ mod tests {
     }
 
     #[test]
+    fn picker_exposes_active_custom_provider_model_row() {
+        let (mut app, _lock) = create_test_app();
+        app.api_provider = crate::config::ApiProvider::Custom;
+        app.model_ids_passthrough = true;
+        app.model = "vendor/custom-model-v1".to_string();
+        app.auto_model = false;
+
+        let view = ModelPickerView::new(&app);
+
+        assert!(view.show_custom_model_row);
+        assert_eq!(view.resolved_model(), "vendor/custom-model-v1");
+        assert_eq!(
+            view.resolved_provider(),
+            Some(crate::config::ApiProvider::Custom)
+        );
+    }
+
+    #[test]
     fn picker_exposes_saved_model_for_active_provider() {
         let (mut app, _lock) = create_test_app();
         app.api_provider = crate::config::ApiProvider::XiaomiMimo;
