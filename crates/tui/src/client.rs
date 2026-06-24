@@ -1056,13 +1056,13 @@ impl DeepSeekClient {
     /// Fetch the provider's live `/models` listing as a secret-free
     /// [`ProviderCatalogDelta`] (#3385).
     ///
-    /// Reuses the same request/retry path as [`Self::list_models`] but maps the
-    /// outcome onto [`CatalogRefreshError`] so a refresh failure stays typed and
-    /// non-fatal — bundled / saved / static rows are untouched. The delta is
-    /// scoped to the base-URL fingerprint and stamped with the fetch time; the
-    /// API key authorizes the request but is **never** persisted into the delta
-    /// or cache. Unknown live rows carry no canonical model, capabilities, or
-    /// pricing, per the #3385 contract.
+    /// Uses the same URL construction and auth client as [`Self::list_models`],
+    /// but issues a single request without `send_with_retry` so a refresh
+    /// failure stays typed and non-fatal — bundled / saved / static rows are
+    /// untouched. The delta is scoped to the base-URL fingerprint and stamped
+    /// with the fetch time; the API key authorizes the request but is **never**
+    /// persisted into the delta or cache. Unknown live rows carry no canonical
+    /// model, capabilities, or pricing, per the #3385 contract.
     pub async fn fetch_catalog_delta(&self) -> Result<ProviderCatalogDelta, CatalogRefreshError> {
         let url = api_url(&self.base_url, "models");
         // A catalog refresh is non-fatal and must produce a *typed* outcome, so
@@ -1111,6 +1111,9 @@ impl DeepSeekClient {
                 provider: provider.clone(),
                 wire_model_id: model.id,
                 canonical_model: None,
+                // This refresh calls the chat-model listing endpoint. A future
+                // provider-specific catalog adapter can split image/TTS/embed
+                // rows before they become executable route candidates.
                 endpoint_key: "chat".to_string(),
                 default_for_provider: false,
                 family: None,
@@ -4060,6 +4063,7 @@ mod tests {
 
     async fn mount_models_json(server: &MockServer, status: u16, body: serde_json::Value) {
         Mock::given(method("GET"))
+            .and(path("/v1/models"))
             .respond_with(ResponseTemplate::new(status).set_body_json(body))
             .mount(server)
             .await;
@@ -4124,6 +4128,7 @@ mod tests {
         // Invalid JSON -> InvalidResponse.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
+            .and(path("/v1/models"))
             .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
             .mount(&server)
             .await;
@@ -4166,13 +4171,18 @@ mod tests {
         assert_eq!(cached.offerings.len(), 1);
         assert_eq!(cached.offerings[0].wire_model_id, "synthetic-model-gamma");
 
-        // A later failing refresh flips status to Failed but PRESERVES the rows.
-        let failing = MockServer::start().await;
-        mount_models_json(&failing, 401, json!({"error": "denied"})).await;
-        // Reuse the same provider+base URL scope so the failure lands on the
-        // existing entry: re-point a client at the original server's fingerprint
-        // by recording the failure directly through the same provider scope.
-        cache.record_failure("openrouter", &fp, CatalogRefreshError::Unauthorized);
+        // A later failing refresh on the same base URL flips status to Failed
+        // but PRESERVES the rows.
+        server.reset().await;
+        mount_models_json(&server, 401, json!({"error": "denied"})).await;
+        let status = client.refresh_catalog_cache(&mut cache, 3600).await;
+        assert!(matches!(
+            status,
+            CatalogStatus::Failed {
+                reason: CatalogRefreshError::Unauthorized,
+                ..
+            }
+        ));
         let cached = cache.get("openrouter", &fp).expect("entry still present");
         assert_eq!(
             cached.offerings.len(),
@@ -4180,7 +4190,6 @@ mod tests {
             "rows from the prior success must survive a failed refresh"
         );
         assert!(matches!(cached.status, CatalogStatus::Failed { .. }));
-        let _ = failing;
     }
 
     #[tokio::test]
