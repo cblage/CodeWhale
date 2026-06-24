@@ -128,6 +128,7 @@ Verify the helper itself after changing it:
 
 ```bash
 bash scripts/release/branch-hygiene.test.sh
+bash scripts/release/ensure-release-on-main.test.sh
 ```
 
 Those scripts are pinned to LF line endings so the same command works from a
