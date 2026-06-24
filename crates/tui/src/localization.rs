@@ -626,7 +626,7 @@ pub enum MessageId {
     CtxInspNoSystemPrompt,
     CtxInspNoReferences,
     CtxInspNoToolActivity,
-    CtxInspAltVHint,
+    CtxInspVHint,
     CtxInspCells,
     CtxInspApiMessages,
     CtxInspActive,
@@ -1071,7 +1071,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CtxInspNoSystemPrompt,
     MessageId::CtxInspNoReferences,
     MessageId::CtxInspNoToolActivity,
-    MessageId::CtxInspAltVHint,
+    MessageId::CtxInspVHint,
     MessageId::CtxInspCells,
     MessageId::CtxInspApiMessages,
     MessageId::CtxInspActive,
@@ -1847,7 +1847,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CtxInspNoSystemPrompt => "No system prompt set.",
         MessageId::CtxInspNoReferences => "No file, directory, or media references recorded yet.",
         MessageId::CtxInspNoToolActivity => "No tool activity recorded yet.",
-        MessageId::CtxInspAltVHint => "Open the matching card and press v for full details.",
+        MessageId::CtxInspVHint => "Open the matching card and press v for full details.",
         MessageId::CtxInspCells => "cells",
         MessageId::CtxInspApiMessages => "API messages",
         MessageId::CtxInspActive => "active",
@@ -2500,7 +2500,7 @@ fn vietnamese(id: MessageId) -> Option<&'static str> {
         MessageId::CtxInspNoSystemPrompt => "Chưa có lời nhắc hệ thống.",
         MessageId::CtxInspNoReferences => "Chưa có tham chiếu tệp, thư mục hoặc phương tiện nào.",
         MessageId::CtxInspNoToolActivity => "Chưa có hoạt động công cụ nào.",
-        MessageId::CtxInspAltVHint => "Mở thẻ phù hợp và nhấn v để biết chi tiết.",
+        MessageId::CtxInspVHint => "Mở thẻ phù hợp và nhấn v để biết chi tiết.",
         MessageId::CtxInspCells => "ô",
         MessageId::CtxInspApiMessages => "tin nhắn API",
         MessageId::CtxInspActive => "đang hoạt động",
@@ -2669,7 +2669,7 @@ fn traditional_chinese(id: MessageId) -> Option<&'static str> {
         MessageId::CtxInspNoSystemPrompt => "未設定系統提示。",
         MessageId::CtxInspNoReferences => "尚未記錄任何檔案、目錄或媒體引用。",
         MessageId::CtxInspNoToolActivity => "尚未記錄任何工具活動。",
-        MessageId::CtxInspAltVHint => "開啟對應的卡片並按 v 檢視詳細資訊。",
+        MessageId::CtxInspVHint => "開啟對應的卡片並按 v 檢視詳細資訊。",
         MessageId::CtxInspCells => "儲存格",
         MessageId::CtxInspApiMessages => "API 訊息",
         MessageId::CtxInspActive => "作用中",
@@ -3313,7 +3313,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
             "ファイル、ディレクトリ、メディアの参照はまだ記録されていません。"
         }
         MessageId::CtxInspNoToolActivity => "ツールアクティビティはまだ記録されていません。",
-        MessageId::CtxInspAltVHint => "該当するカードを開き、v を押すと詳細が表示されます。",
+        MessageId::CtxInspVHint => "該当するカードを開き、v を押すと詳細が表示されます。",
         MessageId::CtxInspCells => "セル",
         MessageId::CtxInspApiMessages => "API メッセージ",
         MessageId::CtxInspActive => "アクティブ",
@@ -3966,7 +3966,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
             "Nenhuma referência de arquivo, diretório ou mídia registrada ainda."
         }
         MessageId::CtxInspNoToolActivity => "Nenhuma atividade de ferramenta registrada ainda.",
-        MessageId::CtxInspAltVHint => {
+        MessageId::CtxInspVHint => {
             "Abra o cartão correspondente e pressione v para detalhes completos."
         }
         MessageId::CtxInspCells => "células",
@@ -4614,7 +4614,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
             "Aún no se han registrado referencias de archivos, directorios o medios."
         }
         MessageId::CtxInspNoToolActivity => "Aún no se ha registrado actividad de herramientas.",
-        MessageId::CtxInspAltVHint => {
+        MessageId::CtxInspVHint => {
             "Abra la tarjeta correspondiente y presione v para ver los detalles completos."
         }
         MessageId::CtxInspCells => "celdas",

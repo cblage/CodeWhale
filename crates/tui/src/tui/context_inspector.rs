@@ -419,7 +419,7 @@ fn push_tools(out: &mut String, app: &App, locale: Locale) {
     if rendered == 0 {
         let _ = writeln!(out, "- {}", tr(locale, MessageId::CtxInspNoToolActivity));
     } else {
-        let _ = writeln!(out, "- {}", tr(locale, MessageId::CtxInspAltVHint));
+        let _ = writeln!(out, "- {}", tr(locale, MessageId::CtxInspVHint));
     }
 }
 

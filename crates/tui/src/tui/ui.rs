@@ -3964,6 +3964,9 @@ async fn run_event_loop(
                 {
                     continue;
                 }
+                // This detail shortcut intentionally precedes vim-normal-mode
+                // handling: visual selection has no useful empty-composer
+                // target, while selected tool cards do.
                 KeyCode::Char('v')
                     if key.modifiers == KeyModifiers::NONE
                         && app.input.is_empty()

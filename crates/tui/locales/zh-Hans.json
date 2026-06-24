@@ -391,7 +391,7 @@
   "CtxInspNoSystemPrompt": "未设置系统提示。",
   "CtxInspNoReferences": "尚未记录任何文件、目录或媒体引用。",
   "CtxInspNoToolActivity": "尚未记录任何工具活动。",
-  "CtxInspAltVHint": "打开对应的卡片并按 v 查看详细信息。",
+  "CtxInspVHint": "打开对应的卡片并按 v 查看详细信息。",
   "CtxInspCells": "单元格",
   "CtxInspApiMessages": "API 消息",
   "CtxInspActive": "活动中",
