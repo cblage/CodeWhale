@@ -115,7 +115,7 @@ fn config_preset_command(app: &mut App, rest: &str) -> CommandResult {
     let tokens: Vec<&str> = rest.split_whitespace().collect();
     let persist = matches!(tokens.last(), Some(&"--save") | Some(&"-s"));
     let name = tokens.first().copied().unwrap_or("");
-    if name.is_empty() {
+    if name.is_empty() || name.starts_with('-') {
         return CommandResult::message(
             "Usage: /config preset <name> [--save]. Available presets: calm.",
         );
@@ -147,7 +147,15 @@ fn config_preset_command(app: &mut App, rest: &str) -> CommandResult {
     // is session-only).
     let mut applied = Vec::with_capacity(fields.len());
     for (key, value) in fields {
-        let _ = set_config_value(app, key, value, false);
+        let result = set_config_value(app, key, value, false);
+        if result.is_error {
+            let message = result
+                .message
+                .unwrap_or_else(|| "unknown apply error".to_string());
+            return CommandResult::error(format!(
+                "Failed to apply preset field {key}={value}: {message}"
+            ));
+        }
         applied.push(format!("{key}={value}"));
     }
 
@@ -2073,6 +2081,18 @@ mod tests {
             message.to_lowercase().contains("unknown preset"),
             "expected unknown-preset error, got: {message}"
         );
+    }
+
+    #[test]
+    fn config_preset_save_without_name_reports_usage() {
+        let mut app = create_test_app();
+        let result = config_command(&mut app, Some("preset --save"));
+        let message = result.message.unwrap_or_default();
+        assert!(
+            message.contains("Usage: /config preset"),
+            "expected usage hint, got: {message}"
+        );
+        assert!(!result.is_error);
     }
 
     #[test]
