@@ -42,6 +42,10 @@ jobs:
         # differ from the workspace sources). Catches mechanical drift before
         # deploy so the website never serves wrong version/provider data.
         run: npm run check:facts
+      - name: Check docs parity
+        # Fails CI when docs-map.ts references non-existent repo files or
+        # when website version / command snippets are stale.
+        run: npm run check:docs
       - name: Run ESLint
         run: npm run lint
       - name: TypeScript type check
