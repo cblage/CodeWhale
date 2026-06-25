@@ -1645,9 +1645,20 @@ impl Engine {
                     match decision {
                         AutoReviewPlanDecision::NoChange => {}
                         AutoReviewPlanDecision::ForcePrompt(reason) => {
-                            approval_required = true;
-                            approval_description = reason;
-                            approval_force_prompt = true;
+                            // YOLO mode (auto_approve) is the explicit "no
+                            // approvals" contract: even the auto-review safety
+                            // floor must not pop a modal in YOLO. Without this
+                            // guard every *background* shell command is held for
+                            // review, because classify_risk marks all shell
+                            // commands Destructive and the Background+Destructive
+                            // safety floor returns HoldForReview. A Block
+                            // decision (typed deny rules / hard blocks) still
+                            // holds below regardless of mode.
+                            if !self.session.auto_approve {
+                                approval_required = true;
+                                approval_description = reason;
+                                approval_force_prompt = true;
+                            }
                         }
                         AutoReviewPlanDecision::Block(reason) => {
                             approval_required = false;

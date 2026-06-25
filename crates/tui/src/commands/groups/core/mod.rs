@@ -28,7 +28,6 @@ mod queue;
 mod rlm;
 mod stash;
 mod subagents;
-mod swarm;
 mod translate;
 pub mod util;
 pub mod voice;
@@ -99,10 +98,6 @@ impl CommandGroup for CoreCommands {
             Box::new(FunctionCommand::new(
                 agent::AgentCmd::info(),
                 agent::AgentCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                swarm::SwarmCmd::info(),
-                swarm::SwarmCmd::execute,
             )),
             Box::new(FunctionCommand::new(
                 links::LinksCmd::info(),

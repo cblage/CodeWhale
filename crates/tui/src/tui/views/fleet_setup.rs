@@ -384,12 +384,12 @@ fn build_lanes(snapshot: &FleetSetupSnapshot) -> Vec<FleetSetupLane> {
                 FleetSetupRow::new(
                     "current route",
                     format!("{} / {}", snapshot.provider, snapshot.model),
-                    format!("reasoning {}", snapshot.reasoning),
+                    format!("default same model, reasoning {}", snapshot.reasoning),
                 )
                 .tone(RowTone::Current),
-                FleetSetupRow::new("inherit", "session route", "reuse active provider/model"),
-                FleetSetupRow::new("fast", "scout", "low-latency fanout and summaries"),
-                FleetSetupRow::new("balanced", "default", "normal build/review work")
+                FleetSetupRow::new("inherit", "same model", "reuse active provider/model"),
+                FleetSetupRow::new("fast", "scout", "opt-in low-latency fanout"),
+                FleetSetupRow::new("balanced", "auto class", "normal build/review when chosen")
                     .tone(RowTone::Ready),
                 FleetSetupRow::new("strong", "hard", "security, release, architecture"),
                 FleetSetupRow::new(
@@ -691,17 +691,16 @@ fn profile_authoring_prompt(
          - description\n\
          - role_hint (set to \"{role}\")\n\
          - model_class_hint (set to \"{model_class}\"; one of inherit, fast, balanced, deep-reasoning, code, review, or tool-heavy)\n\
-         - model (optional explicit model id on the active/resolved route; omit for loadout auto)\n\
+         - model (optional explicit model id on the active/resolved route; omit to inherit the current route)\n\
          - [instructions].text\n\
          - [tools].posture = \"read-only\"\n\n\
          Do not include provider, base_url, api_key, auth, secrets, trust, allow_shell, or approval_required=false.\n\
          If model is present, keep it to a visible model id such as deepseek-v4-pro or glm-5.2.\n\
-         Default operational shape:\n\
-         - one main orchestrator profile manages the Fleet run\n\
-         - starter team is 3 scout/explore workers plus 1 builder, 1 reviewer, 1 verifier, 1 synthesizer, and 1 operator\n\
-         - scout recursion can split into 3 scout children\n\
-         - builder recursion can split into builder + reviewer children\n\
-         - verifier recursion can split into verifier + reviewer children\n\n\
+         Fleet product shape:\n\
+         - one main orchestrator profile coordinates the Fleet run and verifies returned claims\n\
+         - workers are summoned as focused Fleet members with only their assigned slice\n\
+         - default model behavior is same-route inheritance; choose fast/strong/code/review only when the role needs it\n\
+         - do not encode a recursive worker tree in [instructions].text; topology belongs to the orchestrator, not each worker\n\n\
          Keep the profile permission-narrowing and compatible with recursive Fleet role workers.",
         provider = snapshot.provider,
         model = snapshot.model,
@@ -768,7 +767,9 @@ mod tests {
                 assert!(text.contains("provider = DeepSeek"));
                 assert!(text.contains("model (optional explicit model id"));
                 assert!(text.contains("Do not include provider, base_url"));
-                assert!(text.contains("starter team is 3 scout/explore workers"));
+                assert!(text.contains("workers are summoned as focused Fleet members"));
+                assert!(text.contains("default model behavior is same-route inheritance"));
+                assert!(text.contains("topology belongs to the orchestrator"));
             }
             other => panic!("expected profile prompt insertion, got {other:?}"),
         }
@@ -809,7 +810,12 @@ mod tests {
 
         assert!(view.profile_prompt().contains("Current route context only"));
         assert!(view.profile_prompt().contains("permission-narrowing"));
-        assert!(view.profile_prompt().contains("builder + reviewer"));
+        assert!(view.profile_prompt().contains("same-route inheritance"));
+        assert!(
+            view.profile_prompt()
+                .contains("topology belongs to the orchestrator")
+        );
+        assert!(!view.profile_prompt().contains("builder + reviewer"));
     }
 
     #[test]

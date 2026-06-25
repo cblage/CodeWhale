@@ -62,6 +62,7 @@ pub mod session_picker;
 mod shell_job_routing;
 pub mod sidebar;
 pub mod slash_menu;
+pub mod spinner;
 pub mod streaming;
 pub mod streaming_thinking;
 mod subagent_routing;

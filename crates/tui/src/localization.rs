@@ -366,7 +366,6 @@ pub enum MessageId {
     CmdStatuslineDescription,
     CmdFleetDescription,
     CmdSubagentsDescription,
-    CmdSwarmDescription,
     CmdSystemDescription,
     CmdTaskDescription,
     CmdTokensDescription,
@@ -818,7 +817,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdStatuslineDescription,
     MessageId::CmdFleetDescription,
     MessageId::CmdSubagentsDescription,
-    MessageId::CmdSwarmDescription,
     MessageId::CmdSystemDescription,
     MessageId::CmdTaskDescription,
     MessageId::CmdTokensDescription,
@@ -1492,9 +1490,6 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdStatuslineDescription => "Configure which items appear in the footer",
         MessageId::CmdFleetDescription => "Open Fleet setup or worker status",
         MessageId::CmdSubagentsDescription => "Compatibility shortcut for /fleet status",
-        MessageId::CmdSwarmDescription => {
-            "Run a multi-agent fanout turn (sequential | mixture | distill | deliberate)"
-        }
         MessageId::CmdSystemDescription => "Show current system prompt",
         MessageId::CmdTaskDescription => "Manage background tasks",
         MessageId::CmdTokensDescription => "Show token usage for session",
@@ -2132,9 +2127,6 @@ fn vietnamese(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdFleetDescription => "Mở thiết lập Fleet hoặc trạng thái worker",
         MessageId::CmdSubagentsDescription => "Lối tắt tương thích cho /fleet status",
-        MessageId::CmdSwarmDescription => {
-            "Khởi chạy chế độ đa agent (sequential | mixture | distill | deliberate)"
-        }
         MessageId::CmdSystemDescription => "Hiển thị prompt hệ thống hiện tại",
         MessageId::CmdTaskDescription => "Quản lý các nhiệm vụ chạy ngầm",
         MessageId::CmdTokensDescription => "Hiển thị lượng token đã sử dụng cho phiên",
@@ -2962,9 +2954,6 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::CmdStatuslineDescription => "フッターに表示する項目を設定",
         MessageId::CmdFleetDescription => "Fleet設定またはワーカー状態を開く",
         MessageId::CmdSubagentsDescription => "/fleet status の互換ショートカット",
-        MessageId::CmdSwarmDescription => {
-            "マルチエージェントのファンアウトターンを実行（sequential | mixture | distill | deliberate）"
-        }
         MessageId::CmdSystemDescription => "現在のシステムプロンプトを表示",
         MessageId::CmdTaskDescription => "バックグラウンドタスクを管理",
         MessageId::CmdTokensDescription => "セッションのトークン使用量を表示",
@@ -3602,9 +3591,6 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdStatuslineDescription => "Configurar quais itens aparecem no rodapé",
         MessageId::CmdFleetDescription => "Abrir configuração Fleet ou status dos workers",
         MessageId::CmdSubagentsDescription => "Atalho compatível para /fleet status",
-        MessageId::CmdSwarmDescription => {
-            "Executar turno fanout multi-agente (sequential | mixture | distill | deliberate)"
-        }
         MessageId::CmdSystemDescription => "Exibir o prompt de sistema atual",
         MessageId::CmdTaskDescription => "Gerenciar tarefas em segundo plano",
         MessageId::CmdTokensDescription => "Exibir o uso de tokens da sessão",
@@ -4253,9 +4239,6 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         }
         MessageId::CmdFleetDescription => "Abrir configuración Fleet o estado de workers",
         MessageId::CmdSubagentsDescription => "Atajo compatible para /fleet status",
-        MessageId::CmdSwarmDescription => {
-            "Ejecutar turno fanout multi-agente (sequential | mixture | distill | deliberate)"
-        }
         MessageId::CmdSystemDescription => "Mostrar el prompt de sistema actual",
         MessageId::CmdTaskDescription => "Gestionar tareas en segundo plano",
         MessageId::CmdTokensDescription => "Mostrar el uso de tokens de la sesión",

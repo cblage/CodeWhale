@@ -267,7 +267,25 @@ fn fleet_task_prompt_with_profile(
     task_spec: &FleetTaskSpec,
     agent_profile: Option<&AgentProfile>,
 ) -> String {
+    let role = task_spec
+        .worker
+        .as_ref()
+        .and_then(|worker| worker.role.as_deref())
+        .or_else(|| agent_profile.map(|profile| profile.profile.role.name.as_str()))
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+        .unwrap_or("general");
     let mut prompt = String::new();
+    prompt.push_str("You have been summoned as a CodeWhale Fleet member (");
+    prompt.push_str(role);
+    prompt.push_str(") by the Fleet orchestrator.\n\n");
+    prompt.push_str("Fleet operating contract:\n");
+    prompt.push_str("- Work only the assigned slice; keep sibling or topology assumptions out of your answer.\n");
+    prompt.push_str("- Use the policy-gated tools available in this headless worker run.\n");
+    prompt.push_str("- Treat the active provider/model route as inherited unless this task or profile pins a model.\n");
+    prompt.push_str(
+        "- Return concise evidence, gaps, and next actions; the orchestrator will integrate and verify.\n\n",
+    );
     prompt.push_str("Fleet task: ");
     prompt.push_str(&task_spec.name);
 
@@ -872,6 +890,9 @@ mod tests {
 
         let prompt = fleet_task_prompt(&task);
 
+        assert!(prompt.contains("summoned as a CodeWhale Fleet member (general)"));
+        assert!(prompt.contains("Fleet operating contract:"));
+        assert!(prompt.contains("keep sibling or topology assumptions out of your answer"));
         assert!(prompt.contains("Review protocol"));
         assert!(prompt.contains("Find protocol regressions"));
         assert!(prompt.contains("Read the fleet protocol and report issues."));
@@ -922,6 +943,10 @@ mod tests {
 
         assert_eq!(spec.role.as_deref(), Some("reviewer"));
         assert_eq!(spec.agent_type, SubAgentType::Review);
+        assert!(
+            spec.objective
+                .contains("summoned as a CodeWhale Fleet member (reviewer)")
+        );
         assert!(spec.objective.contains("Fleet profile: reviewer"));
         assert!(
             spec.objective

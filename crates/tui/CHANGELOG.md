@@ -47,6 +47,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mirror-trust copy, a fact-drift CI gate, a published install script, and a
   weekly community digest archive on codewhale.net (#3419, #3421, #3415, #3482,
   #3420); per-automation mode/shell/trust/approval settings (#3467).
+- **Model reference browser.** A read-only `/modeldb` command (aliases
+  `model-reference`, `modelref`) opens a pager over the bundled catalog — every
+  model's factual context window, max output, modality, and price, grouped by
+  provider/kind. Labels only: it never selects, routes, or tiers a model
+  (#3205, #2300).
+- **Transcript presets.** A `/config preset <name> [--save]` mechanism with a
+  first `calm` preset — calm mode, calm tool collapse, comfortable spacing, and
+  low motion — presentation-only and evidence-preserving (#3478).
+- **Model capability profiles.** A typed `model_profile` module separates
+  intrinsic model facts from resolved provider-route capability, so compact
+  routes defer heavier nonessential tools while standard/full routes keep the
+  eager tool surface (#3451, #3365).
+- **Live provider catalog refresh.** A secret-free `/models` live-fetch layer
+  (401/403/404/429 mapped to typed outcomes) feeds the catalog cache; the API
+  key authorizes the request but is never persisted into the delta or cache
+  (#3385).
 
 ### Changed
 
@@ -69,6 +85,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   picker scroll/type-ahead and selection contrast hardened (#3500); the README
   was rewritten as an architecture end-cap (#3087); and repo agent guidance was
   de-hardcoded to live truth.
+- **Fleet identity and defaults.** Fleet workers now enter with an explicit
+  "summoned Fleet member" operating contract, setup/profile prompts keep the
+  default model behavior as same-route inheritance, and generated worker
+  instructions avoid leaking recursive topology that only the orchestrator
+  needs.
+- **Legacy swarm cleanup.** Removed the obsolete `/swarm` core command/menu
+  registration so `/fleet` is the product surface, while `/subagents` remains a
+  compatibility shortcut to worker status.
+- **Running-state animation.** Tool cards and background-task rows now share one
+  faster braille spinner cadence, so Bash/background work reads consistently
+  alive across the transcript and sidebar.
 - **Restored contributor credit.** Threaded machine-readable credit
   (`docs/CONTRIBUTORS.md` + `.github/AUTHOR_MAP`) for earlier merged work that
   shipped without it, including the `/jobs cancel-all` action and the npm
@@ -90,6 +117,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Runtime stability.** MCP connection drops are explicit (#3524), HTTP API
   calls reuse a shared MCP pool (#3532), and per-agent sub-agent mailbox
   telemetry is throttled to cut UI lag (#3454).
+- **YOLO background-shell approvals.** A background shell command no longer pops
+  an approval modal in YOLO mode. `classify_risk` marks all shell commands
+  destructive, so the auto-review safety floor held every *background* shell for
+  review, and the `ForcePrompt` site never checked `auto_approve` — only
+  background commands surfaced it, since foreground shells take the
+  `Interactive` origin and skip that branch.
+- **Bash approval modal fit.** The shell approval modal now labels Bash
+  commands directly, avoids repeating command/workdir in the impact summary,
+  wraps long commands, and switches to compact controls on short terminals so
+  the decision keys stay visible.
+- **Custom-provider picker rows.** Concrete `[providers.<name>]` entries now
+  appear in the provider picker (id, endpoint, auth readiness, wire protocol,
+  current model) instead of only the generic placeholder; auth readiness honors
+  per-entry key/env/metadata/no-auth/loopback.
+- **Passive MCP tool discovery.** Runtime API-owned stdio MCP processes are no
+  longer spawned from passive `/v1/apps/mcp/tools` requests; live discovery
+  remains available through `?connect=true`. `doctor` now warns on relative-path
+  stdio MCP commands without `cwd`.
 
 ## [0.8.64] - 2026-06-22
 

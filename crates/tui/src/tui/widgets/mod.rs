@@ -1182,8 +1182,8 @@ impl<'a> ApprovalWidget<'a> {
 /// Layout pad around the takeover card. Generous so the modal feels
 /// like a takeover rather than a popup, but never larger than the
 /// terminal can hold.
-const APPROVAL_CARD_HORIZONTAL_PAD: u16 = 6;
-const APPROVAL_CARD_VERTICAL_PAD: u16 = 2;
+const APPROVAL_CARD_HORIZONTAL_PAD: u16 = 2;
+const APPROVAL_CARD_VERTICAL_PAD: u16 = 1;
 /// Minimum card height — anything tighter and the approval controls
 /// overlap the option list.
 const APPROVAL_CARD_MIN_HEIGHT: u16 = 18;
@@ -1233,11 +1233,11 @@ impl Renderable for ApprovalWidget<'_> {
         let risk = self.request.risk;
         let locale = self.view.locale();
         let palette_colors = approval_palette(risk);
+        let compact_vertical = card_area.height <= 20;
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(20);
 
         // Header: stakes badge + tool identifier. The badge is the
         // first thing the eye lands on.
-        lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
@@ -1268,7 +1268,9 @@ impl Renderable for ApprovalWidget<'_> {
             ),
         ]));
 
-        lines.push(Line::from(""));
+        if !compact_vertical {
+            lines.push(Line::from(""));
+        }
         // About + impacts. Impact lines are the load-bearing content;
         // they tell the user what will happen.
         lines.push(Line::from(vec![
@@ -1294,10 +1296,13 @@ impl Renderable for ApprovalWidget<'_> {
         if let Some(ref summary) = self.request.intent_summary {
             let max_width = card_area.width.saturating_sub(14) as usize;
             if max_width > 0 {
-                lines.push(Line::from(""));
+                if !compact_vertical {
+                    lines.push(Line::from(""));
+                }
                 let intent_label = tr(locale, MessageId::ApprovalIntentLabel);
                 let summary_lines: Vec<&str> = summary.lines().collect();
-                for (i, sline) in summary_lines.iter().take(3).enumerate() {
+                let intent_lines = if compact_vertical { 1 } else { 3 };
+                for (i, sline) in summary_lines.iter().take(intent_lines).enumerate() {
                     let prefix = if i == 0 { intent_label } else { "  " };
                     let truncated = crate::utils::truncate_with_ellipsis(sline, max_width, "...");
                     lines.push(Line::from(vec![
@@ -1313,9 +1318,9 @@ impl Renderable for ApprovalWidget<'_> {
                         Span::styled(truncated, Style::default().fg(palette::TEXT_SECONDARY)),
                     ]));
                 }
-                if summary_lines.len() > 3 {
+                if !compact_vertical && summary_lines.len() > intent_lines {
                     let more = tr(locale, MessageId::ApprovalMoreLines)
-                        .replace("{count}", &(summary_lines.len() - 3).to_string());
+                        .replace("{count}", &(summary_lines.len() - intent_lines).to_string());
                     lines.push(Line::from(vec![
                         Span::raw("  "),
                         Span::styled(more, Style::default().fg(palette::TEXT_HINT)),
@@ -1324,7 +1329,9 @@ impl Renderable for ApprovalWidget<'_> {
             }
         }
 
-        lines.push(Line::from(""));
+        if !compact_vertical {
+            lines.push(Line::from(""));
+        }
         let details = self.request.prominent_detail_items(locale);
         if details.is_empty() {
             let params_str = self.request.params_display();
@@ -1343,114 +1350,108 @@ impl Renderable for ApprovalWidget<'_> {
                 ),
             ]));
         } else {
-            for detail in details.iter().take(4) {
+            let detail_limit = if compact_vertical { 2 } else { 4 };
+            for detail in details.iter().take(detail_limit) {
                 if self.request.category == ToolCategory::Shell
                     && matches!(detail.label.as_str(), "Command" | "命令")
                     && let Some(shell_lines) = detail.shell_lines.as_deref()
                 {
-                    push_shell_command_lines(&mut lines, &detail.label, shell_lines);
+                    let command_width = card_area.width.saturating_sub(10) as usize;
+                    push_shell_command_lines(
+                        &mut lines,
+                        &detail.label,
+                        shell_lines,
+                        command_width.max(20),
+                        if compact_vertical { Some(3) } else { None },
+                    );
                 } else {
                     push_detail_line(&mut lines, &detail.label, &detail.value);
                 }
             }
         }
 
-        if let Some(preview) = self.request.ask_rule_preview() {
+        if compact_vertical {
+            push_compact_approval_controls(
+                &mut lines,
+                palette_colors.accent,
+                palette_colors.shortcut,
+                locale,
+                self.request.can_save_ask_rule(),
+            );
+        } else {
+            lines.push(Line::from(""));
+
+            let options = approval_options_for(risk, locale);
+
+            for (i, opt) in options.iter().enumerate() {
+                // Divider between the approve group (0-1) and the deny/abort
+                // group (2-3) so the two clusters read as distinct decisions and
+                // an approve is harder to misread as a deny. Sized to fit the
+                // minimum card inner width without wrapping.
+                if i == 2 {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  {}", "─".repeat(28)),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    )]));
+                }
+
+                let is_selected = i == self.view.selected();
+                let label_color = if opt.dangerous {
+                    palette_colors.accent
+                } else {
+                    palette::TEXT_BODY
+                };
+
+                let option_style = approval_option_style(is_selected, label_color);
+                let shortcut_style = approval_option_style(is_selected, palette_colors.shortcut);
+
+                // The selected row is already painted as a highlight strip by the
+                // styles above; give it a leading caret so the action Enter will
+                // fire is unmistakable, not signalled by the background alone.
+                let lead = if is_selected {
+                    Span::styled("\u{25b8} ", approval_selected_style())
+                } else {
+                    Span::raw("  ")
+                };
+                lines.push(Line::from(vec![
+                    lead,
+                    Span::styled(
+                        format!("[{}] ", opt.key_hint),
+                        shortcut_style.add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(opt.label.to_string(), option_style),
+                ]));
+            }
+
+            // Footer: Enter commits the highlighted row; y/a/d remain direct
+            // shortcuts for users who do not want to move the selection.
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    label_ask_rule_preview(locale),
+                    selection_hint_prefix(locale),
                     Style::default().fg(palette::TEXT_HINT),
                 ),
-            ]));
-            let max_width = card_area.width.saturating_sub(6) as usize;
-            for line in preview
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .take(4)
-            {
-                let truncated =
-                    crate::utils::truncate_with_ellipsis(line.trim(), max_width.max(20), "...");
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(truncated, Style::default().fg(palette::TEXT_SECONDARY)),
-                ]));
-            }
-        }
-
-        lines.push(Line::from(""));
-
-        let options = approval_options_for(risk, locale);
-
-        for (i, opt) in options.iter().enumerate() {
-            // Divider between the approve group (0-1) and the deny/abort
-            // group (2-3) so the two clusters read as distinct decisions and
-            // an approve is harder to misread as a deny. Sized to fit the
-            // minimum card inner width without wrapping.
-            if i == 2 {
-                lines.push(Line::from(vec![Span::styled(
-                    format!("  {}", "─".repeat(28)),
-                    Style::default().fg(palette::TEXT_MUTED),
-                )]));
-            }
-
-            let is_selected = i == self.view.selected();
-            let label_color = if opt.dangerous {
-                palette_colors.accent
-            } else {
-                palette::TEXT_BODY
-            };
-
-            let option_style = approval_option_style(is_selected, label_color);
-            let shortcut_style = approval_option_style(is_selected, palette_colors.shortcut);
-
-            // The selected row is already painted as a highlight strip by the
-            // styles above; give it a leading caret so the action Enter will
-            // fire is unmistakable, not signalled by the background alone.
-            let lead = if is_selected {
-                Span::styled("\u{25b8} ", approval_selected_style())
-            } else {
-                Span::raw("  ")
-            };
-            lines.push(Line::from(vec![
-                lead,
                 Span::styled(
-                    format!("[{}] ", opt.key_hint),
-                    shortcut_style.add_modifier(Modifier::BOLD),
+                    selection_hint_value(locale),
+                    Style::default()
+                        .fg(palette_colors.accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(opt.label.to_string(), option_style),
+                Span::styled(
+                    footer_controls(locale),
+                    Style::default().fg(palette::TEXT_HINT),
+                ),
+                if self.request.can_save_ask_rule() {
+                    Span::styled(
+                        save_ask_rule_hint(locale),
+                        Style::default().fg(palette_colors.shortcut),
+                    )
+                } else {
+                    Span::raw("")
+                },
             ]));
         }
-
-        // Footer: Enter commits the highlighted row; y/a/d remain direct
-        // shortcuts for users who do not want to move the selection.
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                selection_hint_prefix(locale),
-                Style::default().fg(palette::TEXT_HINT),
-            ),
-            Span::styled(
-                selection_hint_value(locale),
-                Style::default()
-                    .fg(palette_colors.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                footer_controls(locale),
-                Style::default().fg(palette::TEXT_HINT),
-            ),
-            if self.request.can_save_ask_rule() {
-                Span::styled(
-                    save_ask_rule_hint(locale),
-                    Style::default().fg(palette_colors.shortcut),
-                )
-            } else {
-                Span::raw("")
-            },
-        ]));
 
         let title = format!(
             " {} {} — {} ",
@@ -1625,7 +1626,13 @@ fn push_detail_line(lines: &mut Vec<Line<'static>>, label: &str, value: &str) {
     ]));
 }
 
-fn push_shell_command_lines(lines: &mut Vec<Line<'static>>, label: &str, command_lines: &[String]) {
+fn push_shell_command_lines(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    command_lines: &[String],
+    command_width: usize,
+    max_rows: Option<usize>,
+) {
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(
@@ -1636,15 +1643,66 @@ fn push_shell_command_lines(lines: &mut Vec<Line<'static>>, label: &str, command
         ),
     ]));
 
+    let mut rendered = 0usize;
     for line in command_lines {
+        for wrapped in wrap_text(line, command_width) {
+            if max_rows.is_some_and(|limit| rendered >= limit) {
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        "...",
+                        Style::default()
+                            .fg(palette::TEXT_HINT)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                return;
+            }
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(
+                    wrapped,
+                    Style::default()
+                        .fg(palette::TEXT_BODY)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            rendered += 1;
+        }
+    }
+}
+
+fn push_compact_approval_controls(
+    lines: &mut Vec<Line<'static>>,
+    accent: Color,
+    shortcut: Color,
+    locale: Locale,
+    can_save_rule: bool,
+) {
+    lines.push(Line::from(""));
+    let (once, always, deny, abort, save) = match locale {
+        Locale::ZhHans => ("仅本次", "始终", "拒绝", "中止", "保存"),
+        _ => ("once", "always", "deny", "abort", "save"),
+    };
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("[y] ", Style::default().fg(shortcut).bold()),
+        Span::styled(format!("{once}  "), Style::default().fg(palette::TEXT_BODY)),
+        Span::styled("[a] ", Style::default().fg(shortcut).bold()),
+        Span::styled(
+            format!("{always}  "),
+            Style::default().fg(palette::TEXT_BODY),
+        ),
+        Span::styled("[d] ", Style::default().fg(accent).bold()),
+        Span::styled(format!("{deny}  "), Style::default().fg(palette::TEXT_BODY)),
+        Span::styled("[Esc] ", Style::default().fg(accent).bold()),
+        Span::styled(abort.to_string(), Style::default().fg(palette::TEXT_BODY)),
+    ]));
+    if can_save_rule {
         lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled(
-                line.clone(),
-                Style::default()
-                    .fg(palette::TEXT_BODY)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::raw("  "),
+            Span::styled("[s] ", Style::default().fg(shortcut).bold()),
+            Span::styled(save.to_string(), Style::default().fg(palette::TEXT_HINT)),
         ]));
     }
 }
@@ -1657,13 +1715,6 @@ fn save_ask_rule_hint(locale: Locale) -> &'static str {
     match locale {
         Locale::ZhHans => "  s 批准并保存询问规则",
         _ => "  s approve + save ask rule",
-    }
-}
-
-fn label_ask_rule_preview(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "询问规则预览：",
-        _ => "Ask rule preview:",
     }
 }
 
@@ -4683,6 +4734,44 @@ mod tests {
         assert!(rendered.contains("Command:"), "{rendered}");
         assert!(rendered.contains("cargo build ||"), "{rendered}");
         assert!(rendered.contains("echo fallback"), "{rendered}");
+    }
+
+    #[test]
+    fn approval_shell_modal_stays_useful_on_short_terminals() {
+        let request = crate::tui::approval::ApprovalRequest::new_with_intent(
+            "approval-1",
+            "exec_shell",
+            "Auto-review policy requires approval: destructive background/headless actions cannot auto-approve",
+            &serde_json::json!({
+                "command": "cd /Volumes/VIXinSSD/codewhale; cargo clippy -p codewhale-tui --all-targets --locked -- -D warnings 2>&1 | tee /tmp/codewhale-clippy.log",
+                "cwd": "/Volumes/VIXinSSD/codewhale",
+            }),
+            "exec_shell:cargo-clippy",
+            Some("Confirmed - passes in isolation, so this is the documentation gate."),
+            std::path::Path::new("/Volumes/VIXinSSD/codewhale"),
+        );
+        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let widget = ApprovalWidget::new(&request, &view);
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+
+        widget.render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+
+        assert!(
+            !rendered.contains("Auto-review policy requires approval"),
+            "policy internals should not be the modal summary:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("Impact: Command"),
+            "command should only render in the command block:\n{rendered}"
+        );
+        assert!(rendered.contains("Review the Bash command"), "{rendered}");
+        assert!(rendered.contains("Command:"), "{rendered}");
+        assert!(rendered.contains("cargo clippy"), "{rendered}");
+        assert!(rendered.contains("[y]"), "{rendered}");
+        assert!(rendered.contains("[a]"), "{rendered}");
+        assert!(rendered.contains("[d]"), "{rendered}");
     }
 
     /// Regression for issue #65: after `App::handle_resize`, the chat widget

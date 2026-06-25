@@ -35,9 +35,11 @@ use checklist::{
 use checklist::{ChecklistChange, ChecklistItemSnapshot, ChecklistSnapshot};
 use constants::{
     ASSISTANT_GLYPH, TOOL_CARD_SUMMARY_LINES, TOOL_COMMAND_LINE_LIMIT, TOOL_DONE_SYMBOL,
-    TOOL_FAILED_SYMBOL, TOOL_HEADER_SUMMARY_LIMIT, TOOL_OUTPUT_LINE_LIMIT, TOOL_RUNNING_SYMBOLS,
-    TOOL_STATUS_SYMBOL_MS, TRANSCRIPT_RAIL, USER_GLYPH,
+    TOOL_FAILED_SYMBOL, TOOL_HEADER_SUMMARY_LIMIT, TOOL_OUTPUT_LINE_LIMIT, TRANSCRIPT_RAIL,
+    USER_GLYPH,
 };
+#[cfg(test)]
+use constants::{TOOL_RUNNING_SYMBOLS, TOOL_STATUS_SYMBOL_MS};
 use message::{
     RenderedTranscriptLine, assistant_label_style_for, hard_break_copy_lines, message_body_style,
     render_message, render_message_with_copy_metadata, render_plain_message, render_user_message,
@@ -1596,22 +1598,7 @@ fn render_cycle_boundary(content: &str, width: u16) -> Vec<Line<'static>> {
 fn status_symbol(started_at: Option<Instant>, status: ToolStatus, low_motion: bool) -> String {
     match status {
         ToolStatus::Running => {
-            if low_motion {
-                return TOOL_RUNNING_SYMBOLS[0].to_string();
-            }
-            let elapsed_ms = started_at.map_or_else(
-                || {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |duration| duration.as_millis())
-                },
-                |t| t.elapsed().as_millis(),
-            );
-            let cycle = u128::from(TOOL_STATUS_SYMBOL_MS);
-            let idx = elapsed_ms
-                .checked_div(cycle)
-                .map_or(0, |d| d % (TOOL_RUNNING_SYMBOLS.len() as u128));
-            TOOL_RUNNING_SYMBOLS[usize::try_from(idx).unwrap_or_default()].to_string()
+            crate::tui::spinner::braille_spinner_frame(started_at, low_motion).to_string()
         }
         ToolStatus::Success | ToolStatus::Hydrated => TOOL_DONE_SYMBOL.to_string(),
         ToolStatus::Failed => TOOL_FAILED_SYMBOL.to_string(),

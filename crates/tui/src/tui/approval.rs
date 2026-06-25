@@ -218,6 +218,9 @@ impl ApprovalRequest {
     pub fn description_for_locale(&self, locale: Locale) -> String {
         match locale {
             Locale::ZhHans => localized_description_zh_hans(self.category),
+            _ if self.category == ToolCategory::Shell => {
+                "Review the Bash command before it runs.".to_string()
+            }
             _ => self.description.clone(),
         }
     }
@@ -237,6 +240,7 @@ impl ApprovalRequest {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn ask_rule_preview(&self) -> Option<String> {
         if self.persistent_ask_rules.is_empty() {
             return None;
@@ -461,14 +465,7 @@ fn build_impact_summary(tool_name: &str, category: ToolCategory, params: &Value)
             impacts
         }
         ToolCategory::Shell => {
-            let mut impacts = vec!["Executes a shell command.".to_string()];
-            if let Some(command) = param_preview(params, &["cmd", "command"], 96) {
-                impacts.push(format!("Command: {command}"));
-            }
-            if let Some(workdir) = param_preview(params, &["workdir", "cwd"], 72) {
-                impacts.push(format!("Working dir: {workdir}"));
-            }
-            impacts
+            vec!["Executes a Bash command in your workspace.".to_string()]
         }
         ToolCategory::Network => {
             let mut impacts = vec!["May reach network services or remote content.".to_string()];
@@ -544,14 +541,7 @@ fn build_impact_summary_zh_hans(
             impacts
         }
         ToolCategory::Shell => {
-            let mut impacts = vec!["执行 shell 命令。".to_string()];
-            if let Some(command) = param_preview(params, &["cmd", "command"], 96) {
-                impacts.push(format!("命令：{command}"));
-            }
-            if let Some(workdir) = param_preview(params, &["workdir", "cwd"], 72) {
-                impacts.push(format!("工作目录：{workdir}"));
-            }
-            impacts
+            vec!["在工作区执行 Bash 命令。".to_string()]
         }
         ToolCategory::Network => {
             let mut impacts = vec!["可能访问网络服务或远程内容。".to_string()];
@@ -1561,13 +1551,20 @@ mod tests {
             request
                 .impacts
                 .iter()
-                .any(|line| line.contains("Executes a shell command"))
+                .any(|line| line.contains("Executes a Bash command"))
         );
         assert!(
             request
                 .impacts
                 .iter()
-                .any(|line| line.contains("cargo test"))
+                .all(|line| !line.contains("cargo test")),
+            "command detail should not be duplicated in the impact summary"
+        );
+        let details = request.prominent_detail_items(Locale::En);
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.label == "Command" && detail.value.contains("cargo test"))
         );
     }
 

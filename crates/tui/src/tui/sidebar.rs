@@ -29,6 +29,7 @@ use super::app::{
     TaskPanelEntryKind,
 };
 use super::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
+use super::spinner::braille_spinner_frame_for_duration_ms;
 use super::subagent_routing::active_fanout_counts;
 use super::ui_text::{concise_shell_command_label, truncate_line_to_width};
 
@@ -1428,15 +1429,14 @@ fn background_task_is_live(task: &TaskPanelEntry) -> bool {
         && matches!(task.status.as_str(), "queued" | "running")
 }
 
-const BRAILLE_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const BRAILLE_SPINNER_FRAME_MS: u64 = 100;
-
 fn background_task_spinner_prefix(task: &TaskPanelEntry) -> Option<&'static str> {
     if task.status != "running" {
         return None;
     }
-    let frame = task.duration_ms.unwrap_or_default() / BRAILLE_SPINNER_FRAME_MS;
-    Some(BRAILLE_SPINNER_FRAMES[frame as usize % BRAILLE_SPINNER_FRAMES.len()])
+    Some(braille_spinner_frame_for_duration_ms(
+        task.duration_ms.unwrap_or_default(),
+        false,
+    ))
 }
 
 fn stale_no_output_label(task: &TaskPanelEntry) -> Option<String> {
@@ -3026,15 +3026,15 @@ fn sidebar_hover_rows(
 mod tests {
     use super::{
         ACTIVE_TOOL_COMPLETED_ROW_TTL, ACTIVE_TOOL_STALE_RUNNING_ROW_TTL, AutoSidebarPanel,
-        AutoSidebarState, BRAILLE_SPINNER_FRAME_MS, SidebarAgentRow, SidebarFocus, SidebarHoverRow,
-        SidebarHoverSection, SidebarHoverState, SidebarSubagentSummary, SidebarToolRow,
-        SidebarWorkChecklistItem, SidebarWorkStrategyStep, SidebarWorkSummary, ToolRowOrder,
-        agent_row_hover_text, auto_sidebar_panels, background_task_spinner_prefix,
-        context_panel_cost_line, editorial_tool_rows, normalize_activity_text, render_sidebar,
-        sidebar_agent_rows, sidebar_hover_rows, sidebar_work_summary,
-        sort_sidebar_agent_rows_as_tree, subagent_panel_hover_texts, subagent_panel_lines,
-        subagent_panel_rows, task_panel_hover_texts, task_panel_lines, task_panel_rows,
-        work_panel_empty_hint, work_panel_hover_texts, work_panel_lines,
+        AutoSidebarState, SidebarAgentRow, SidebarFocus, SidebarHoverRow, SidebarHoverSection,
+        SidebarHoverState, SidebarSubagentSummary, SidebarToolRow, SidebarWorkChecklistItem,
+        SidebarWorkStrategyStep, SidebarWorkSummary, ToolRowOrder, agent_row_hover_text,
+        auto_sidebar_panels, background_task_spinner_prefix, context_panel_cost_line,
+        editorial_tool_rows, normalize_activity_text, render_sidebar, sidebar_agent_rows,
+        sidebar_hover_rows, sidebar_work_summary, sort_sidebar_agent_rows_as_tree,
+        subagent_panel_hover_texts, subagent_panel_lines, subagent_panel_rows,
+        task_panel_hover_texts, task_panel_lines, task_panel_rows, work_panel_empty_hint,
+        work_panel_hover_texts, work_panel_lines,
     };
     use crate::config::Config;
     use crate::palette;
@@ -3048,6 +3048,7 @@ mod tests {
     use crate::tui::history::{
         ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolStatus,
     };
+    use crate::tui::spinner::BRAILLE_SPINNER_FRAME_MS;
     use ratatui::{Terminal, backend::TestBackend, text::Line};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
