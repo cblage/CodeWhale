@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added provider-level `context_window` overrides so OpenAI-compatible
   gateways and self-hosted providers can budget against their real model
   context window (#3545).
+- Added the native `codew` shim to release archives, Windows installer inputs,
+  local release-asset preparation, and checksum verification so manual installs
+  receive the same short command that Cargo installs build.
 
 ### Changed
 

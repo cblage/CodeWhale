@@ -33,7 +33,7 @@ cat <<EOF
 npm install -g codewhale
 \`\`\`
 
-The wrapper downloads both binaries from this Release and places them in the same directory.
+The wrapper downloads the matched runtime binaries from this Release and places them in the same directory.
 
 ### Docker / GHCR
 
@@ -44,7 +44,7 @@ docker run --rm -it \\
   ghcr.io/hmbown/codewhale:${tag}
 \`\`\`
 
-The image ships the \`codewhale\` dispatcher and \`codewhale-tui\` runtime. The \`latest\` tag is also updated on release.
+The image ships the \`codewhale\` dispatcher, \`codew\` shim, and \`codewhale-tui\` runtime. The \`latest\` tag is also updated on release.
 
 ### Cargo (Linux / macOS)
 
@@ -52,11 +52,11 @@ The image ships the \`codewhale\` dispatcher and \`codewhale-tui\` runtime. The 
 cargo install codewhale-cli codewhale-tui --locked
 \`\`\`
 
-Both crates are required — \`codewhale-cli\` produces the \`codewhale\` dispatcher and \`codewhale-tui\` produces the interactive runtime that the dispatcher delegates to. Installing only one binary will fail at runtime with a \`MISSING_COMPANION_BINARY\` error.
+Both crates are required — \`codewhale-cli\` produces the \`codewhale\` dispatcher and \`codew\` shim, while \`codewhale-tui\` produces the interactive runtime that the dispatcher delegates to. Installing only one crate will fail at runtime with a \`MISSING_COMPANION_BINARY\` error.
 
 ### Manual download — platform archives (recommended)
 
-Each archive below contains **both** the \`codewhale\` dispatcher and \`codewhale-tui\` runtime, plus an install script:
+Each archive below contains the \`codewhale\` dispatcher, \`codew\` shim, and \`codewhale-tui\` runtime, plus an install script:
 
 | Platform | Archive | Install script |
 |---|---|---|
@@ -77,14 +77,14 @@ cd codewhale-<platform>
 \`\`\`
 
 **Windows:**
-- For the installer path, run \`CodeWhaleSetup.exe\`; it installs both binaries under \`%LOCALAPPDATA%\\Programs\\CodeWhale\\bin\` and adds that directory to the current-user PATH.
+- For the installer path, run \`CodeWhaleSetup.exe\`; it installs \`codewhale.exe\`, \`codew.exe\`, and \`codewhale-tui.exe\` under \`%LOCALAPPDATA%\\Programs\\CodeWhale\\bin\` and adds that directory to the current-user PATH.
 - Extract \`codewhale-windows-x64.zip\`
 - Run \`install.bat\` (copies to \`%USERPROFILE%\\bin\`)
 - Add \`%USERPROFILE%\\bin\` to your PATH
 
 The **portable** Windows archive skips the install script — extract and run from any directory. The NSIS installer is currently unsigned and may trigger Windows SmartScreen until a signing certificate is wired into the release pipeline.
 
-Each platform also has **bare, unarchived** binaries attached below (\`codewhale-<platform>\` and \`codewhale-tui-<platform>\`) — these are what the npm wrapper and the in-app \`codewhale update\` download, whereas the \`.tar.gz\` / \`.zip\` archives above are the recommended manual download and additionally bundle an install script. The legacy npm package \`deepseek-tui\` is deprecated and is not republished. For migration from v0.8.x legacy binary names, see \`docs/REBRAND.md\`.
+Each platform also has **bare, unarchived** binaries attached below (\`codewhale-<platform>\`, \`codew-<platform>\`, and \`codewhale-tui-<platform>\`) — the npm wrapper and the in-app \`codewhale update\` download the matched runtime binaries, whereas the \`.tar.gz\` / \`.zip\` archives above are the recommended manual download and additionally bundle an install script. The legacy npm package \`deepseek-tui\` is deprecated and is not republished. For migration from v0.8.x legacy binary names, see \`docs/REBRAND.md\`.
 
 ### Verify (recommended)
 

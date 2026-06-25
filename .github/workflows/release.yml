@@ -127,43 +127,55 @@ jobs:
             target: x86_64-unknown-linux-musl
             platform: linux-x64
             cli_binary: codewhale
+            shim_binary: codew
             tui_binary: codewhale-tui
             cli_artifact: codewhale-linux-x64
+            shim_artifact: codew-linux-x64
             tui_artifact: codewhale-tui-linux-x64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             platform: linux-arm64
             cli_binary: codewhale
+            shim_binary: codew
             tui_binary: codewhale-tui
             cli_artifact: codewhale-linux-arm64
+            shim_artifact: codew-linux-arm64
             tui_artifact: codewhale-tui-linux-arm64
           - os: ubuntu-latest
             target: riscv64gc-unknown-linux-gnu
             platform: linux-riscv64
             cli_binary: codewhale
+            shim_binary: codew
             tui_binary: codewhale-tui
             cli_artifact: codewhale-linux-riscv64
+            shim_artifact: codew-linux-riscv64
             tui_artifact: codewhale-tui-linux-riscv64
           - os: macos-latest
             target: x86_64-apple-darwin
             platform: macos-x64
             cli_binary: codewhale
+            shim_binary: codew
             tui_binary: codewhale-tui
             cli_artifact: codewhale-macos-x64
+            shim_artifact: codew-macos-x64
             tui_artifact: codewhale-tui-macos-x64
           - os: macos-latest
             target: aarch64-apple-darwin
             platform: macos-arm64
             cli_binary: codewhale
+            shim_binary: codew
             tui_binary: codewhale-tui
             cli_artifact: codewhale-macos-arm64
+            shim_artifact: codew-macos-arm64
             tui_artifact: codewhale-tui-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             platform: windows-x64
             cli_binary: codewhale.exe
+            shim_binary: codew.exe
             tui_binary: codewhale-tui.exe
             cli_artifact: codewhale-windows-x64.exe
+            shim_artifact: codew-windows-x64.exe
             tui_artifact: codewhale-tui-windows-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
@@ -266,11 +278,16 @@ jobs:
           }
 
           stage_binary "${{ matrix.cli_binary }}" "${{ matrix.cli_artifact }}"
+          stage_binary "${{ matrix.shim_binary }}" "${{ matrix.shim_artifact }}"
           stage_binary "${{ matrix.tui_binary }}" "${{ matrix.tui_artifact }}"
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.cli_artifact }}
           path: ${{ matrix.cli_artifact }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.shim_artifact }}
+          path: ${{ matrix.shim_artifact }}
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.tui_artifact }}
@@ -287,7 +304,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: 'codewhale*'
+          pattern: '*'
       - name: Create platform archives
         shell: bash
         run: |
@@ -299,22 +316,26 @@ jobs:
           bundle() {
             local platform="$1"   # linux-x64, linux-arm64, macos-x64, macos-arm64, windows-x64
             local cli_src="$2"    # artifact name for codewhale binary
-            local tui_src="$3"    # artifact name for codewhale-tui binary
-            local ext="$4"        # tar.gz or zip
-            local variant="$5"    # '' (standard) or 'portable' (Windows only, no install script)
-            shift 5
+            local shim_src="$3"   # artifact name for codew shim
+            local tui_src="$4"    # artifact name for codewhale-tui binary
+            local ext="$5"        # tar.gz or zip
+            local variant="$6"    # '' (standard) or 'portable' (Windows only, no install script)
+            shift 6
 
             local dir="bundles/codewhale-${platform}${variant:+-}${variant}"
             mkdir -p "$dir"
 
             # Copy binaries, stripping platform suffixes
             local cli_dst="codewhale"
+            local shim_dst="codew"
             local tui_dst="codewhale-tui"
             if [[ "$platform" == windows-* ]]; then
               cli_dst="codewhale.exe"
+              shim_dst="codew.exe"
               tui_dst="codewhale-tui.exe"
             fi
             cp "artifacts/${cli_src}/${cli_src}" "$dir/${cli_dst}"
+            cp "artifacts/${shim_src}/${shim_src}" "$dir/${shim_dst}"
             cp "artifacts/${tui_src}/${tui_src}" "$dir/${tui_dst}"
 
             # Add install script (standard variant only)
@@ -342,29 +363,29 @@ jobs:
 
           # Platform: linux-x64
           bundle linux-x64 \
-            codewhale-linux-x64 codewhale-tui-linux-x64 tar.gz ""
+            codewhale-linux-x64 codew-linux-x64 codewhale-tui-linux-x64 tar.gz ""
 
           # Platform: linux-arm64
           bundle linux-arm64 \
-            codewhale-linux-arm64 codewhale-tui-linux-arm64 tar.gz ""
+            codewhale-linux-arm64 codew-linux-arm64 codewhale-tui-linux-arm64 tar.gz ""
 
           # Platform: linux-riscv64
           bundle linux-riscv64 \
-            codewhale-linux-riscv64 codewhale-tui-linux-riscv64 tar.gz ""
+            codewhale-linux-riscv64 codew-linux-riscv64 codewhale-tui-linux-riscv64 tar.gz ""
 
           # Platform: macos-x64
           bundle macos-x64 \
-            codewhale-macos-x64 codewhale-tui-macos-x64 tar.gz ""
+            codewhale-macos-x64 codew-macos-x64 codewhale-tui-macos-x64 tar.gz ""
 
           # Platform: macos-arm64
           bundle macos-arm64 \
-            codewhale-macos-arm64 codewhale-tui-macos-arm64 tar.gz ""
+            codewhale-macos-arm64 codew-macos-arm64 codewhale-tui-macos-arm64 tar.gz ""
 
           # Platform: windows-x64 (standard + portable)
           bundle windows-x64 \
-            codewhale-windows-x64.exe codewhale-tui-windows-x64.exe zip ""
+            codewhale-windows-x64.exe codew-windows-x64.exe codewhale-tui-windows-x64.exe zip ""
           bundle windows-x64 \
-            codewhale-windows-x64.exe codewhale-tui-windows-x64.exe zip "portable"
+            codewhale-windows-x64.exe codew-windows-x64.exe codewhale-tui-windows-x64.exe zip "portable"
 
           echo ""
           echo "=== Archive checksums ==="
@@ -388,7 +409,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: 'codewhale*-windows-x64.exe'
+          pattern: '*windows-x64.exe'
       - name: Install NSIS
         shell: pwsh
         run: choco install nsis -y --no-progress
@@ -398,6 +419,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $version = "${{ needs.resolve.outputs.tag }}".TrimStart("v")
           Copy-Item "artifacts\codewhale-windows-x64.exe\codewhale-windows-x64.exe" "scripts\installer\codewhale.exe"
+          Copy-Item "artifacts\codew-windows-x64.exe\codew-windows-x64.exe" "scripts\installer\codew.exe"
           Copy-Item "artifacts\codewhale-tui-windows-x64.exe\codewhale-tui-windows-x64.exe" "scripts\installer\codewhale-tui.exe"
           $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
           if (!(Test-Path $makensis)) {

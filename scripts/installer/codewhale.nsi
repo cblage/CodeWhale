@@ -1,14 +1,15 @@
 ; codewhale.nsi — NSIS installer for CodeWhale (Windows)
 ;
 ; Requirements (see https://github.com/Hmbown/CodeWhale/issues/1983):
-;   - Install codewhale.exe and codewhale-tui.exe side-by-side
+;   - Install codewhale.exe, codew.exe, and codewhale-tui.exe side-by-side
 ;   - Default to %LOCALAPPDATA%\Programs\CodeWhale\bin
 ;   - Add install dir to current-user PATH
 ;   - Uninstaller removes the PATH entry
 ;
 ; Usage:
-;   1. Place both .exe files next to this script:
+;   1. Place all .exe files next to this script:
 ;        codewhale.exe
+;        codew.exe
 ;        codewhale-tui.exe
 ;   2. Build:
 ;        makensis /DVERSION=1.2.3 codewhale.nsi
@@ -74,6 +75,7 @@ Section "Install" SecInstall
 
   ; Copy binaries
   File "codewhale.exe"
+  File "codew.exe"
   File "codewhale-tui.exe"
 
   ; Write uninstaller
@@ -119,6 +121,7 @@ SectionEnd
 Section "Uninstall"
   ; Remove binaries
   Delete "$INSTDIR\bin\codewhale.exe"
+  Delete "$INSTDIR\bin\codew.exe"
   Delete "$INSTDIR\bin\codewhale-tui.exe"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR\bin"

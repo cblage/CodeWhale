@@ -26,6 +26,7 @@ test("openharmony x64 resolves to linux x64 binaries", () => {
     const result = detectBinaryNames();
     assert.equal(result.codewhale, "codewhale-linux-x64");
     assert.equal(result.tui, "codewhale-tui-linux-x64");
+    assert.equal(result.codew, "codew-linux-x64");
   });
 });
 
@@ -35,6 +36,7 @@ test("openharmony arm64 resolves to linux arm64 binaries", () => {
     const result = detectBinaryNames();
     assert.equal(result.codewhale, "codewhale-linux-arm64");
     assert.equal(result.tui, "codewhale-tui-linux-arm64");
+    assert.equal(result.codew, "codew-linux-arm64");
   });
 });
 
@@ -71,6 +73,8 @@ test("allAssetNames includes every matrix entry", () => {
   const assetNames = allAssetNames();
   assert.ok(assetNames.includes("codewhale-windows-x64.exe"));
   assert.ok(assetNames.includes("codewhale-tui-windows-x64.exe"));
+  assert.ok(assetNames.includes("codew-windows-x64.exe"));
   assert.ok(assetNames.includes("codewhale.bat"));
+  assert.ok(allReleaseAssetNames().includes("codew-windows-x64.exe"));
   assert.ok(allReleaseAssetNames().includes("codewhale.bat"));
 });

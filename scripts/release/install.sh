@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # CodeWhale Unix installer
-# Copies codewhale and codewhale-tui to ~/.local/bin (or $PREFIX/bin)
+# Copies codewhale, codew, and codewhale-tui to ~/.local/bin (or $PREFIX/bin)
 
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="${PREFIX}/bin"
@@ -85,7 +85,17 @@ mkdir -p "$BIN_DIR"
 
 echo "Installing codewhale to $BIN_DIR ..."
 
-for bin in codewhale codewhale-tui; do
+install_binary() {
+    local src="$1"
+    local dst="$2"
+    local tmp="${dst}.tmp.$$"
+    rm -f "$tmp"
+    cp "$src" "$tmp"
+    chmod 0755 "$tmp"
+    mv -f "$tmp" "$dst"
+}
+
+for bin in codewhale codew codewhale-tui; do
     src="$SCRIPT_DIR/$bin"
     dst="$BIN_DIR/$bin"
     if [[ ! -f "$src" ]]; then
@@ -93,13 +103,12 @@ for bin in codewhale codewhale-tui; do
         exit 1
     fi
     preflight_glibc "$src"
-    cp "$src" "$dst"
-    chmod +x "$dst"
+    install_binary "$src" "$dst"
     echo "  $dst"
 done
 
 echo ""
-echo "Done. Both binaries installed to $BIN_DIR."
+echo "Done. Commands installed to $BIN_DIR."
 
 # Check if BIN_DIR is on PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
