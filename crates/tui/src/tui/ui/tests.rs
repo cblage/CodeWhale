@@ -6,7 +6,7 @@ use crate::config::{
 use crate::config_ui::{self, WebConfigSession, WebConfigSessionEvent};
 use crate::core::engine::mock_engine_handle;
 use crate::tui::active_cell::ActiveCell;
-use crate::tui::app::{SidebarHoverRow, SidebarHoverSection, ToolDetailRecord};
+use crate::tui::app::{ReasoningEffort, SidebarHoverRow, SidebarHoverSection, ToolDetailRecord};
 use crate::tui::file_mention::{
     apply_mention_menu_selection, find_file_mention_completions, partial_file_mention_at_cursor,
     try_autocomplete_file_mention, user_request_with_file_mentions, visible_mention_menu_entries,
@@ -1788,8 +1788,10 @@ fn hotbar_setup_save_error_leaves_live_config_and_file_unchanged() {
         action: "mode.plan".to_string(),
         label: None,
     }];
-    let mut config = Config::default();
-    config.hotbar = Some(original_bindings.clone());
+    let mut config = Config {
+        hotbar: Some(original_bindings.clone()),
+        ..Default::default()
+    };
     let attempted_bindings = vec![codewhale_config::HotbarBindingToml {
         slot: 1,
         action: "mode.agent".to_string(),
@@ -1901,6 +1903,14 @@ fn forced_approval_prompt_bypasses_session_approval_shortcut() {
 fn non_forced_approval_request_keeps_existing_auto_shortcuts() {
     let mut app = create_test_app();
     app.approval_mode = ApprovalMode::Auto;
+    assert!(!should_auto_approve_approval_request(
+        &app,
+        "exec_shell",
+        "shell:exec_shell:cargo test",
+        false,
+    ));
+
+    app.approval_mode = ApprovalMode::Bypass;
     assert!(should_auto_approve_approval_request(
         &app,
         "exec_shell",
@@ -1917,6 +1927,24 @@ fn non_forced_approval_request_keeps_existing_auto_shortcuts() {
         "shell:exec_shell:cargo test",
         false,
     ));
+}
+
+#[test]
+fn app_auto_approval_helper_covers_yolo_and_bypass_only() {
+    let mut app = create_test_app();
+    app.mode = AppMode::Agent;
+    app.approval_mode = ApprovalMode::Suggest;
+    assert!(!app_auto_approve_enabled(&app));
+
+    app.approval_mode = ApprovalMode::Auto;
+    assert!(!app_auto_approve_enabled(&app));
+
+    app.approval_mode = ApprovalMode::Bypass;
+    assert!(app_auto_approve_enabled(&app));
+
+    app.approval_mode = ApprovalMode::Suggest;
+    app.mode = AppMode::Yolo;
+    assert!(app_auto_approve_enabled(&app));
 }
 
 fn create_test_options() -> TuiOptions {
@@ -3495,6 +3523,40 @@ async fn dispatch_resume_message_restores_paused_command_goal() {
     }
 }
 
+#[tokio::test]
+async fn dispatch_user_message_keeps_auto_review_separate_from_bypass() {
+    let mut app = create_test_app();
+    app.mode = AppMode::Agent;
+    app.approval_mode = ApprovalMode::Auto;
+    app.allow_shell = true;
+    app.trust_mode = true;
+    let mut engine = mock_engine_handle();
+    let config = Config::default();
+
+    dispatch_user_message(
+        &mut app,
+        &config,
+        &engine.handle,
+        QueuedMessage::new("run the local verification".to_string(), None),
+    )
+    .await
+    .expect("dispatch user message");
+
+    match engine.rx_op.recv().await.expect("send message op") {
+        crate::core::ops::Op::SendMessage {
+            mode,
+            auto_approve,
+            approval_mode,
+            ..
+        } => {
+            assert_eq!(mode, AppMode::Agent);
+            assert!(!auto_approve);
+            assert_eq!(approval_mode, ApprovalMode::Auto);
+        }
+        other => panic!("expected SendMessage, got {other:?}"),
+    }
+}
+
 #[test]
 fn apply_goal_snapshot_updates_visible_goal_status() {
     let mut app = create_test_app();
@@ -4072,6 +4134,36 @@ fn hotbar_dispatches_slash_command_slot() {
         Some(HotbarDispatch::AppAction(AppAction::OpenModePicker))
     );
     assert!(app.input.is_empty());
+}
+
+#[test]
+fn hotbar_bound_disabled_action_reports_reason_without_dispatching() {
+    let mut app = create_test_app();
+    app.onboarding = OnboardingState::None;
+    app.auto_model = true;
+    app.reasoning_effort = ReasoningEffort::Off;
+    app.needs_redraw = false;
+    let config = Config {
+        hotbar: Some(vec![codewhale_config::HotbarBindingToml {
+            slot: 1,
+            label: Some("reason".to_string()),
+            action: "reasoning.cycle".to_string(),
+        }]),
+        ..Config::default()
+    };
+
+    assert_eq!(
+        dispatch_hotbar_slot(&mut app, &config, 1).expect("disabled slot dispatch"),
+        Some(HotbarDispatch::Handled)
+    );
+    assert_eq!(app.reasoning_effort, ReasoningEffort::Off);
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some(
+            "Hotbar slot 1 action is not available: Reasoning effort is controlled by auto model routing."
+        )
+    );
+    assert!(app.needs_redraw);
 }
 
 #[test]
@@ -5072,6 +5164,39 @@ async fn bang_shell_input_dispatches_shell_op_instead_of_model_message() {
             assert!(!trust_mode);
             assert!(!auto_approve);
             assert_eq!(approval_mode, ApprovalMode::Suggest);
+        }
+        other => panic!("expected RunShellCommand, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn bang_shell_input_keeps_auto_review_separate_from_bypass() {
+    let mut app = create_test_app();
+    app.mode = AppMode::Agent;
+    app.approval_mode = ApprovalMode::Auto;
+    app.trust_mode = true;
+
+    let mut engine = mock_engine_handle();
+
+    let handled = handle_bang_shell_input(&mut app, &engine.handle, "! pwd")
+        .await
+        .expect("bang shell handler");
+
+    assert!(handled);
+    let op = engine.rx_op.recv().await.expect("engine op");
+    match op {
+        Op::RunShellCommand {
+            command,
+            mode,
+            trust_mode,
+            auto_approve,
+            approval_mode,
+        } => {
+            assert_eq!(command, "pwd");
+            assert_eq!(mode, AppMode::Agent);
+            assert!(trust_mode);
+            assert!(!auto_approve);
+            assert_eq!(approval_mode, ApprovalMode::Auto);
         }
         other => panic!("expected RunShellCommand, got {other:?}"),
     }
@@ -8030,6 +8155,24 @@ fn apply_loaded_session_restores_auto_model_mode() {
     assert_eq!(app.last_effective_reasoning_effort, None);
     assert_eq!(app.reasoning_effort, ReasoningEffort::Auto);
     assert_eq!(app.effective_model_for_budget(), DEFAULT_TEXT_MODEL);
+}
+
+#[test]
+fn apply_loaded_session_restores_saved_mode() {
+    let mut app = create_test_app();
+    app.set_mode(crate::tui::app::AppMode::Agent);
+    let mut session = saved_session_with_messages(vec![
+        text_message("user", "draft a plan"),
+        text_message("assistant", "plan response"),
+    ]);
+    session.metadata.mode = Some("plan".to_string());
+
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
+
+    assert!(!recovered);
+    assert_eq!(app.mode, crate::tui::app::AppMode::Plan);
+    assert!(!app.allow_shell);
+    assert!(!app.trust_mode);
 }
 
 #[test]

@@ -223,7 +223,11 @@ fn should_auto_approve_approval_request(
 ) -> bool {
     !approval_force_prompt
         && (is_session_approved_for_tool(app, tool_name, grouping_key)
-            || app.approval_mode == ApprovalMode::Auto)
+            || app_auto_approve_enabled(app))
+}
+
+fn app_auto_approve_enabled(app: &App) -> bool {
+    app.mode == AppMode::Yolo || app.approval_mode == ApprovalMode::Bypass
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -815,6 +819,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 system_prompt_override: false,
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
+                mode: app.mode,
             })
             .await;
     }
@@ -2907,8 +2912,8 @@ async fn run_event_loop(
                         blocked_network,
                         blocked_write,
                     } => {
-                        // In YOLO mode, auto-elevate to full access
-                        if app.approval_mode == ApprovalMode::Auto {
+                        // Auto-approved modes may retry denied tools without another prompt.
+                        if app_auto_approve_enabled(app) {
                             log_sensitive_event(
                                 "tool.sandbox.auto_elevate",
                                 serde_json::json!({
@@ -2982,6 +2987,7 @@ async fn run_event_loop(
                         system_prompt_override: false,
                         model: app.model.clone(),
                         workspace: app.workspace.clone(),
+                        mode: app.mode,
                     })
                     .await;
             }
@@ -3589,6 +3595,7 @@ async fn run_event_loop(
                                                 system_prompt_override: false,
                                                 model: app.model.clone(),
                                                 workspace: app.workspace.clone(),
+                                                mode: app.mode,
                                             })
                                             .await;
                                     }
@@ -4655,6 +4662,7 @@ async fn run_event_loop(
                                         system_prompt_override: false,
                                         model: app.model.clone(),
                                         workspace: app.workspace.clone(),
+                                        mode: app.mode,
                                     })
                                     .await;
                             }
@@ -5006,6 +5014,14 @@ fn dispatch_hotbar_slot(
         app.needs_redraw = true;
         return Ok(Some(HotbarDispatch::Handled));
     };
+
+    if let Some(reason) = action.disabled_reason(app) {
+        app.status_message = Some(format!(
+            "Hotbar slot {slot} action is not available: {reason}"
+        ));
+        app.needs_redraw = true;
+        return Ok(Some(HotbarDispatch::Handled));
+    }
 
     action.dispatch(app).map(Some)
 }
@@ -6280,7 +6296,7 @@ async fn dispatch_user_message(
             auto_model: app.auto_model,
             allow_shell: app.allow_shell,
             trust_mode: app.trust_mode,
-            auto_approve: app.mode == AppMode::Yolo,
+            auto_approve: app_auto_approve_enabled(app),
             approval_mode: app.approval_mode,
             translation_enabled: app.translation_enabled,
             show_thinking: app.show_thinking,
@@ -6380,7 +6396,7 @@ async fn handle_bang_shell_input(
             command: command.to_string(),
             mode: app.mode,
             trust_mode: app.trust_mode,
-            auto_approve: app.mode == AppMode::Yolo,
+            auto_approve: app_auto_approve_enabled(app),
             approval_mode: app.approval_mode,
         })
         .await?;
@@ -6806,6 +6822,7 @@ async fn switch_provider(
                 system_prompt_override: false,
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
+                mode: app.mode,
             })
             .await;
     }
@@ -6934,6 +6951,7 @@ async fn apply_provider_fallback_switch(
                 system_prompt_override: false,
                 model: app.model.clone(),
                 workspace: app.workspace.clone(),
+                mode: app.mode,
             })
             .await;
     }
@@ -7054,6 +7072,7 @@ async fn apply_command_result(
                 system_prompt,
                 model,
                 workspace,
+                mode,
             } => {
                 let mut session_id = session_id;
                 let is_full_reset = messages.is_empty() && system_prompt.is_none();
@@ -7070,6 +7089,7 @@ async fn apply_command_result(
                         system_prompt_override: false,
                         model,
                         workspace,
+                        mode,
                     })
                     .await;
                 let _ = engine_handle
@@ -7416,7 +7436,7 @@ async fn apply_command_result(
                     mode: Some(task_mode_label(app.mode).to_string()),
                     allow_shell: Some(app.allow_shell),
                     trust_mode: Some(app.trust_mode),
-                    auto_approve: Some(app.approval_mode == ApprovalMode::Auto),
+                    auto_approve: Some(app_auto_approve_enabled(app)),
                 };
                 match task_manager.add_task(request).await {
                     Ok(task) => {
@@ -7526,6 +7546,7 @@ async fn apply_command_result(
                                     system_prompt_override: false,
                                     model: app.model.clone(),
                                     workspace: app.workspace.clone(),
+                                    mode: app.mode,
                                 })
                                 .await;
                         }
@@ -7650,6 +7671,7 @@ async fn switch_workspace(
                 system_prompt_override: false,
                 model: app.model.clone(),
                 workspace: workspace.clone(),
+                mode: app.mode,
             })
             .await;
     }
@@ -8665,13 +8687,21 @@ fn render(f: &mut Frame, app: &mut App, config: &Config) {
             content_width,
             budget,
         );
-        let visible_lines = if input_text.is_empty() {
-            1
+        let visual_rows = if input_text.is_empty() {
+            let hint: Option<std::borrow::Cow<'_, str>> = if let Some(ref suggestion) =
+                app.prompt_suggestion
+                && !app.is_history_search_active()
+            {
+                Some(std::borrow::Cow::Borrowed(suggestion.as_str()))
+            } else {
+                Some(crate::tui::widgets::composer_empty_hint_text(app))
+            };
+            crate::tui::widgets::empty_composer_visual_rows(hint.as_deref(), content_width, budget)
         } else {
             // Count wrapped lines (approximation matching the render path).
             crate::tui::widgets::wrap_input_lines_for_mouse(input_text, content_width).len()
         };
-        let top_padding = budget.saturating_sub(visible_lines.clamp(1, budget));
+        let top_padding = budget.saturating_sub(visual_rows.clamp(1, budget));
         app.viewport.last_composer_scroll_offset = scroll_offset;
         app.viewport.last_composer_top_padding = top_padding;
     }
@@ -9019,6 +9049,7 @@ async fn handle_view_events(
                                 system_prompt_override: false,
                                 model: app.model.clone(),
                                 workspace: app.workspace.clone(),
+                                mode: app.mode,
                             })
                             .await;
                         let _ = engine_handle
@@ -9232,6 +9263,7 @@ async fn handle_view_events(
                             system_prompt_override: false,
                             model: app.model.clone(),
                             workspace: app.workspace.clone(),
+                            mode: app.mode,
                         })
                         .await;
                 }
@@ -9745,6 +9777,9 @@ fn apply_loaded_session(app: &mut App, config: &Config, session: &SavedSession) 
     app.set_model_selection(session.metadata.model.clone());
     app.update_model_compaction_budget();
     apply_workspace_runtime_state(app, config, session.metadata.workspace.clone());
+    if let Some(mode) = session.metadata.mode.as_deref().and_then(AppMode::parse) {
+        app.set_mode(mode);
+    }
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
     app.session.session_cost = session.metadata.cost.session_cost_usd;
@@ -10049,7 +10084,7 @@ fn enable_alternate_scroll_mode<W: Write>(writer: &mut W) {
     set_alternate_scroll_mode(writer, true);
 }
 
-fn disable_alternate_scroll_mode<W: Write>(writer: &mut W) {
+pub(crate) fn disable_alternate_scroll_mode<W: Write>(writer: &mut W) {
     set_alternate_scroll_mode(writer, false);
 }
 
@@ -10114,7 +10149,7 @@ fn enable_windows_ime_console_mode() {
 /// across focus events and are only re-established by `resume_terminal`
 /// after a suspension, which always runs a separate path.
 ///
-fn recover_terminal_modes<W: Write>(
+pub(crate) fn recover_terminal_modes<W: Write>(
     writer: &mut W,
     use_mouse_capture: bool,
     use_bracketed_paste: bool,
@@ -10146,7 +10181,7 @@ fn try_enable_bracketed_paste_mode<W: Write>(writer: &mut W) -> bool {
     }
 }
 
-fn disable_bracketed_paste_mode<W: Write>(writer: &mut W) {
+pub(crate) fn disable_bracketed_paste_mode<W: Write>(writer: &mut W) {
     if let Err(err) = execute!(writer, DisableBracketedPaste) {
         tracing::debug!(?err, "DisableBracketedPaste ignored");
     }

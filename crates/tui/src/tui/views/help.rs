@@ -12,6 +12,8 @@
 //! ten rows, `Home`/`End` jump to ends, and `Esc` closes. Pressing `?` again
 //! at the call-site (`tui::ui`) also toggles the overlay closed.
 
+use std::borrow::Cow;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
     buffer::Buffer,
@@ -36,7 +38,7 @@ enum HelpSection {
 }
 
 impl HelpSection {
-    fn label(self, locale: Locale) -> &'static str {
+    fn label(self, locale: Locale) -> Cow<'static, str> {
         match self {
             Self::Command => tr(locale, MessageId::HelpSlashCommands),
             Self::Keybinding => tr(locale, MessageId::HelpKeybindings),
@@ -107,7 +109,7 @@ impl HelpView {
         view
     }
 
-    fn tr(&self, id: MessageId) -> &'static str {
+    fn tr(&self, id: MessageId) -> Cow<'static, str> {
         tr(self.locale, id)
     }
 

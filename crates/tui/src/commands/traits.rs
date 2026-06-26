@@ -1,5 +1,6 @@
 //! Command traits and registry support.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::localization::{Locale, MessageId, tr};
@@ -54,7 +55,7 @@ impl CommandInfo {
         }
     }
 
-    pub fn description_for(&self, locale: Locale) -> &'static str {
+    pub fn description_for(&self, locale: Locale) -> Cow<'static, str> {
         tr(locale, self.description_id)
     }
 

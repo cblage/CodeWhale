@@ -195,7 +195,7 @@ mod tests {
         let result = queue(&mut app, None);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        assert!(msg.contains(tr(app.ui_locale, MessageId::CmdQueueNoMessages)));
+        assert!(msg.contains(&*tr(app.ui_locale, MessageId::CmdQueueNoMessages)));
     }
 
     #[test]
@@ -228,7 +228,7 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(tr(Locale::En, MessageId::CmdQueueMissingIndex)),
+            msg.contains(&*tr(Locale::En, MessageId::CmdQueueMissingIndex)),
             "msg={msg:?}"
         );
     }
@@ -242,7 +242,7 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(tr(Locale::En, MessageId::CmdQueueIndexPositive)),
+            msg.contains(&*tr(Locale::En, MessageId::CmdQueueIndexPositive)),
             "msg={msg:?}"
         );
     }
@@ -256,7 +256,7 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(tr(Locale::En, MessageId::CmdQueueNotFound)),
+            msg.contains(&*tr(Locale::En, MessageId::CmdQueueNotFound)),
             "msg={msg:?}"
         );
     }
@@ -277,7 +277,7 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(tr(Locale::En, MessageId::CmdQueueAlreadyEditing)),
+            msg.contains(&*tr(Locale::En, MessageId::CmdQueueAlreadyEditing)),
             "msg={msg:?}"
         );
     }
@@ -327,7 +327,7 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(tr(Locale::En, MessageId::CmdQueueCleared)),
+            msg.contains(&*tr(Locale::En, MessageId::CmdQueueCleared)),
             "msg={msg:?}"
         );
         assert!(app.queued_messages.is_empty());
@@ -342,7 +342,7 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(tr(Locale::En, MessageId::CmdQueueAlreadyEmpty)),
+            msg.contains(&*tr(Locale::En, MessageId::CmdQueueAlreadyEmpty)),
             "msg={msg:?}"
         );
     }

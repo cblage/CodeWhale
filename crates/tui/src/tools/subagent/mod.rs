@@ -3578,7 +3578,8 @@ async fn inspect_agent_from_input(
 
     if let Some(agent_ref) = parse_agent_ref(input) {
         let (snapshot, worker_record) = {
-            let manager = manager.read().await;
+            let mut manager = manager.write().await;
+            manager.cleanup(COMPLETED_AGENT_RETENTION);
             let snapshot = manager
                 .get_result_by_ref(&agent_ref)
                 .map_err(|err| ToolError::invalid_input(err.to_string()))?;
@@ -3599,7 +3600,8 @@ async fn inspect_agent_from_input(
     }
 
     let snapshots = {
-        let manager = manager.read().await;
+        let mut manager = manager.write().await;
+        manager.cleanup(COMPLETED_AGENT_RETENTION);
         manager
             .list_filtered(include_archived)
             .into_iter()

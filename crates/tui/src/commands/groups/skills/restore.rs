@@ -8,7 +8,7 @@
 //! the user can always view the list, just not one-shot revert without a
 //! safety net.
 
-use super::CommandResult;
+use crate::commands::CommandResult;
 use crate::snapshot::{Snapshot, SnapshotRepo};
 use crate::tui::app::App;
 use chrono::TimeZone;
@@ -18,7 +18,7 @@ const MAX_LIST_LIMIT: usize = 100;
 const MAX_RESTORE_INDEX: usize = 1000;
 
 /// Entry point for `/restore [N|list [N]]`.
-pub fn restore(app: &mut App, arg: Option<&str>) -> CommandResult {
+fn restore(app: &mut App, arg: Option<&str>) -> CommandResult {
     let workspace = app.workspace.clone();
     let repo = match SnapshotRepo::open_or_init(&workspace) {
         Ok(r) => r,
@@ -166,6 +166,29 @@ fn format_snapshot_time(timestamp: i64) -> String {
 
 fn short_sha(sha: &str) -> &str {
     &sha[..sha.len().min(8)]
+}
+
+pub(in crate::commands) const COMMAND_INFO: crate::commands::traits::CommandInfo =
+    crate::commands::traits::CommandInfo {
+        name: "restore",
+        aliases: &[],
+        usage: "/restore [N|list [N]]",
+        description_id: crate::localization::MessageId::CmdRestoreDescription,
+    };
+
+pub(in crate::commands) struct RestoreCmd;
+
+impl crate::commands::traits::RegisterCommand for RestoreCmd {
+    fn info() -> &'static crate::commands::traits::CommandInfo {
+        &COMMAND_INFO
+    }
+
+    fn execute(
+        app: &mut crate::tui::app::App,
+        arg: Option<&str>,
+    ) -> crate::commands::CommandResult {
+        restore(app, arg)
+    }
 }
 
 #[cfg(test)]

@@ -1,10 +1,31 @@
 //! Task commands: add/list/show/cancel
 
+use crate::commands::traits::{CommandInfo, RegisterCommand};
+use crate::localization::MessageId;
 use crate::tui::app::{App, AppAction};
 
-use super::CommandResult;
+use crate::commands::CommandResult;
 
-pub fn task(_app: &mut App, args: Option<&str>) -> CommandResult {
+pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+    name: "task",
+    aliases: &["tasks"],
+    usage: "/task [add <prompt>|list|show <id>|cancel <id>]",
+    description_id: MessageId::CmdTaskDescription,
+};
+
+pub(in crate::commands) struct TaskCmd;
+
+impl RegisterCommand for TaskCmd {
+    fn info() -> &'static CommandInfo {
+        &COMMAND_INFO
+    }
+
+    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
+        task(app, arg)
+    }
+}
+
+fn task(_app: &mut App, args: Option<&str>) -> CommandResult {
     let raw = args.unwrap_or("").trim();
     if raw.is_empty() || raw.eq_ignore_ascii_case("list") {
         return CommandResult::action(AppAction::TaskList);

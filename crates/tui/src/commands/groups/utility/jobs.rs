@@ -1,10 +1,31 @@
 //! Shell job-center commands.
 
+use crate::commands::traits::{CommandInfo, RegisterCommand};
+use crate::localization::MessageId;
 use crate::tui::app::{App, AppAction, ShellJobAction};
 
-use super::CommandResult;
+use crate::commands::CommandResult;
 
-pub fn jobs(_app: &mut App, args: Option<&str>) -> CommandResult {
+pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+    name: "jobs",
+    aliases: &["job", "zuoye"],
+    usage: "/jobs [list|show <id>|poll <id>|wait <id>|stdin <id> <input>|cancel <id>]",
+    description_id: MessageId::CmdJobsDescription,
+};
+
+pub(in crate::commands) struct JobsCmd;
+
+impl RegisterCommand for JobsCmd {
+    fn info() -> &'static CommandInfo {
+        &COMMAND_INFO
+    }
+
+    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
+        jobs(app, arg)
+    }
+}
+
+fn jobs(_app: &mut App, args: Option<&str>) -> CommandResult {
     let raw = args.unwrap_or("").trim();
     if raw.is_empty() || raw.eq_ignore_ascii_case("list") {
         return CommandResult::action(AppAction::ShellJob(ShellJobAction::List));

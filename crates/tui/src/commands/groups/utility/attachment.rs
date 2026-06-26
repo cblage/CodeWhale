@@ -2,10 +2,31 @@
 
 use std::path::{Path, PathBuf};
 
-use super::CommandResult;
+use crate::commands::CommandResult;
+use crate::commands::traits::{CommandInfo, RegisterCommand};
+use crate::localization::MessageId;
 use crate::tui::app::App;
 
-pub fn attach(app: &mut App, arg: Option<&str>) -> CommandResult {
+pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+    name: "attach",
+    aliases: &["image", "media", "fujian"],
+    usage: "/attach <path>",
+    description_id: MessageId::CmdAttachDescription,
+};
+
+pub(in crate::commands) struct AttachCmd;
+
+impl RegisterCommand for AttachCmd {
+    fn info() -> &'static CommandInfo {
+        &COMMAND_INFO
+    }
+
+    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
+        attach(app, arg)
+    }
+}
+
+fn attach(app: &mut App, arg: Option<&str>) -> CommandResult {
     let Some(raw_path) = arg.map(str::trim).filter(|value| !value.is_empty()) else {
         return CommandResult::error("Usage: /attach <image-or-video-path>");
     };

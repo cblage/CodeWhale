@@ -3,7 +3,7 @@ use super::*;
 use super::context::{COMPACTION_SUMMARY_MARKER, TURN_MAX_OUTPUT_TOKENS};
 use super::turn_loop::registered_tool_approval_required;
 use crate::config::ApiProvider;
-use crate::models::SystemBlock;
+use crate::models::{SystemBlock, Usage};
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use crate::tools::plan::{PlanItemArg, PlanSnapshot, StepStatus};
 use crate::tools::spec::ToolCapability;
@@ -459,6 +459,14 @@ fn file_ask_rule_engine(tool: &str, path: &str) -> codewhale_execpolicy::ExecPol
     ])
 }
 
+fn model_turn_event_timeout() -> Duration {
+    if cfg!(windows) {
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(10)
+    }
+}
+
 #[test]
 fn auto_review_policy_forces_prompt_for_publish_like_actions() {
     let (decision, audit) = auto_review_plan_decision(
@@ -637,14 +645,14 @@ fn auto_review_policy_preserves_yolo_for_detached_destructive_tools() {
             "exec_shell",
             &json!({"command": "cargo test", "background": true}),
             run_origin,
-            crate::tui::approval::ApprovalMode::Auto,
+            crate::tui::approval::ApprovalMode::Bypass,
             Some("run tests in the background"),
             true,
             false,
         );
 
         assert_eq!(decision, AutoReviewPlanDecision::NoChange);
-        assert_eq!(audit["approval_mode"], "AUTO");
+        assert_eq!(audit["approval_mode"], "BYPASS");
         assert_eq!(audit["run_origin"], run_origin.as_str());
         assert_eq!(audit["decision"], "ask_user");
     }
@@ -2350,7 +2358,7 @@ async fn yolo_mode_does_not_prompt_for_model_driven_typed_ask_rule() {
 
     let mut saw_complete = false;
     let mut rx = handle.rx_event.write().await;
-    while let Some(event) = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
         .await
         .expect("timed out waiting for engine event")
     {
@@ -2487,7 +2495,7 @@ async fn yolo_mode_does_not_prompt_for_background_shell_safety_floor() {
 
     let mut saw_complete = false;
     let mut rx = handle.rx_event.write().await;
-    while let Some(event) = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
         .await
         .expect("timed out waiting for engine event")
     {
@@ -3081,11 +3089,11 @@ fn turn_approval_mode_prefers_auto_approve_flag() {
 
     assert_eq!(
         agent_approval_mode_for_turn(true, ApprovalMode::Suggest),
-        ApprovalMode::Auto
+        ApprovalMode::Bypass
     );
     assert_eq!(
         agent_approval_mode_for_turn(true, ApprovalMode::Never),
-        ApprovalMode::Auto
+        ApprovalMode::Bypass
     );
 }
 
@@ -3169,6 +3177,47 @@ async fn change_mode_op_updates_current_mode_and_emits_status() {
 }
 
 #[tokio::test]
+async fn sync_session_restores_current_mode() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        model: "deepseek-v4-pro".to_string(),
+        ..Default::default()
+    };
+    let (engine, handle) = Engine::new(config, &Config::default());
+
+    let run = tokio::spawn(engine.run());
+    handle
+        .send(Op::SyncSession {
+            session_id: Some("plan-session".to_string()),
+            messages: Vec::new(),
+            system_prompt: None,
+            system_prompt_override: false,
+            model: "deepseek-v4-pro".to_string(),
+            workspace: tmp.path().to_path_buf(),
+            mode: AppMode::Plan,
+        })
+        .await
+        .expect("sync session");
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    handle
+        .send(Op::GetSessionSnapshot {
+            tx: std::sync::Arc::new(std::sync::Mutex::new(Some(tx))),
+        })
+        .await
+        .expect("request snapshot");
+    let snapshot = tokio::time::timeout(Duration::from_secs(2), rx)
+        .await
+        .expect("snapshot response")
+        .expect("snapshot");
+
+    assert_eq!(snapshot.mode, "plan");
+
+    run.abort();
+}
+
+#[tokio::test]
 async fn edit_last_turn_preserves_current_mode() {
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
@@ -3203,6 +3252,7 @@ async fn edit_last_turn_preserves_current_mode() {
             system_prompt_override: false,
             model: "deepseek-v4-pro".to_string(),
             workspace: tmp.path().to_path_buf(),
+            mode: AppMode::Agent,
         })
         .await
         .expect("sync session");
@@ -3794,6 +3844,55 @@ fn turn_metadata_includes_current_local_date_without_working_set() {
 }
 
 #[test]
+fn turn_metadata_surfaces_context_and_resource_usage() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        model: "deepseek-v4-flash".to_string(),
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine.session.total_usage.add(&Usage {
+        input_tokens: 1_200,
+        output_tokens: 300,
+        prompt_cache_hit_tokens: Some(800),
+        prompt_cache_miss_tokens: Some(400),
+        ..Default::default()
+    });
+    {
+        let mut goal = engine.config.goal_state.lock().expect("goal lock");
+        goal.create("Finish telemetry visibility".to_string(), Some(2_000));
+        goal.record_usage(1_000, 100);
+    }
+
+    let user_msg = engine
+        .user_text_message_with_turn_metadata("continue the long-running release task".to_string());
+    let last_block = user_msg.content.last().expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = last_block else {
+        panic!("expected text metadata block");
+    };
+
+    assert!(text.contains("Context pressure:"), "got: {text}");
+    assert!(text.contains("tokens;"), "got: {text}");
+    assert!(
+        text.contains("input tokens available"),
+        "context headroom should be model-visible: {text}"
+    );
+    assert!(
+        text.contains("Session token usage: 1500 total (1200 input, 300 output"),
+        "session usage should be model-visible: {text}"
+    );
+    assert!(text.contains("cache hits 800"), "got: {text}");
+    assert!(text.contains("cache misses 400"), "got: {text}");
+    assert!(
+        text.contains("Active goal resource usage:"),
+        "active goal resource usage should be model-visible: {text}"
+    );
+    assert!(text.contains("50% budget"), "got: {text}");
+    assert!(text.contains("10.0 tok/s"), "got: {text}");
+}
+
+#[test]
 fn runtime_turn_metadata_marks_non_authoritative_input() {
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
@@ -3978,32 +4077,40 @@ fn review_only_external_input_keeps_explicit_mode_with_advisory_hint() {
 }
 
 #[test]
-fn turn_metadata_omits_mode_policy() {
+fn turn_metadata_includes_plan_mode_policy() {
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
         workspace: tmp.path().to_path_buf(),
         ..Default::default()
     };
-    let (engine, _handle) = Engine::new(config, &Config::default());
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine.current_mode = AppMode::Plan;
 
     let user_msg = engine.user_text_message_with_turn_metadata_for_route(
-        "test mode metadata".to_string(),
+        "explain the refactor plan before editing".to_string(),
         "deepseek-v4-flash",
         false,
         None,
         false,
     );
-    // turn_meta was relocated to the tail of the user message in #2517
-    // to keep the leading bytes (user input) stable across date / model
-    // route / working-set changes.
     let last_block = user_msg.content.last().expect("turn metadata block");
     let ContentBlock::Text { text, .. } = last_block else {
         panic!("expected text metadata block");
     };
 
+    assert!(text.contains("Current mode: plan"), "got: {text}");
     assert!(
-        !text.contains("Current mode:"),
-        "turn metadata should leave runtime policy to the capability tag, got: {text}"
+        text.contains("Current mode policy source: runtime"),
+        "got: {text}"
+    );
+    assert!(text.contains("##### Mode: Plan"), "got: {text}");
+    assert!(
+        text.contains("All writes and patches are blocked"),
+        "got: {text}"
+    );
+    assert!(
+        text.contains("Shell and code execution are unavailable"),
+        "got: {text}"
     );
 }
 

@@ -151,7 +151,7 @@ impl ModalView for ModePickerView {
             let name = mode.display_name_localized(self.locale);
             // Pad by terminal columns, not scalar count, so wide (CJK) mode
             // names keep the hint column aligned.
-            let pad = " ".repeat(7usize.saturating_sub(UnicodeWidthStr::width(name)));
+            let pad = " ".repeat(7usize.saturating_sub(UnicodeWidthStr::width(&*name)));
 
             lines.push(Line::from(vec![
                 Span::styled(
@@ -194,6 +194,15 @@ mod tests {
     fn number_keys_select_modes() {
         let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
         let action = view.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
+        match action {
+            ViewAction::EmitAndClose(ViewEvent::ModeSelected { mode }) => {
+                assert_eq!(mode, AppMode::Auto);
+            }
+            other => panic!("expected ModeSelected, got {other:?}"),
+        }
+
+        let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
+        let action = view.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE));
         match action {
             ViewAction::EmitAndClose(ViewEvent::ModeSelected { mode }) => {
                 assert_eq!(mode, AppMode::Yolo);

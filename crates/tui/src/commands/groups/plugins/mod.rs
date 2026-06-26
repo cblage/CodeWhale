@@ -1,18 +1,60 @@
-//! `/plugins` slash command — list and inspect script plugin tools.
+//! Plugin command area: list installed plugins and (future) execute plugins.
+//!
+//! Plugins are script-based tools discovered in a configured plugin directory
+//! (default: `~/.codewhale/tools`). The `/plugins` command lists them and
+//! shows per-plugin metadata. A future `/plugin` command will handle execution.
 
 use std::path::PathBuf;
 
 use crate::commands::CommandResult;
+use crate::commands::traits::{
+    Command, CommandGroup, CommandInfo, FunctionCommand, RegisterCommand,
+};
 use crate::config::Config;
 use crate::localization::{MessageId, tr};
 use crate::tools::plugin::scan_plugin_dir;
+use crate::tools::spec::ApprovalRequirement;
 use crate::tui::app::App;
 
+pub struct PluginsCommands;
+
+impl CommandGroup for PluginsCommands {
+    fn commands(&self) -> Vec<Box<dyn Command>> {
+        vec![Box::new(FunctionCommand::new(
+            PluginsCmd::info(),
+            PluginsCmd::execute,
+        ))]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `/plugins` — list or show detail
+// ---------------------------------------------------------------------------
+
+pub(in crate::commands) const PLUGINS_INFO: CommandInfo = CommandInfo {
+    name: "plugins",
+    aliases: &["plugin"],
+    usage: "/plugins [name]",
+    description_id: MessageId::CmdPluginDescription,
+};
+
+pub(in crate::commands) struct PluginsCmd;
+
+impl RegisterCommand for PluginsCmd {
+    fn info() -> &'static CommandInfo {
+        &PLUGINS_INFO
+    }
+
+    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
+        plugins(app, arg)
+    }
+}
+
 /// List discovered plugins, or show details for a named plugin.
-pub fn plugins(app: &mut App, arg: Option<&str>) -> CommandResult {
+fn plugins(app: &mut App, arg: Option<&str>) -> CommandResult {
     let Some(plugin_dir) = plugin_dir_for(app) else {
         return CommandResult::error(
-            "Could not resolve plugin directory. Set [tools].plugin_dir in config.toml or ensure ~/.codewhale/tools exists.".to_string(),
+            "Could not resolve plugin directory. Set [tools].plugin_dir in config.toml or ensure ~/.codewhale/tools exists.",
         );
     };
 
@@ -103,11 +145,11 @@ fn show_plugin_detail(
     CommandResult::message(out)
 }
 
-fn approval_label(approval: crate::tools::spec::ApprovalRequirement) -> &'static str {
+fn approval_label(approval: ApprovalRequirement) -> &'static str {
     match approval {
-        crate::tools::spec::ApprovalRequirement::Auto => "auto",
-        crate::tools::spec::ApprovalRequirement::Suggest => "suggest",
-        crate::tools::spec::ApprovalRequirement::Required => "required",
+        ApprovalRequirement::Auto => "auto",
+        ApprovalRequirement::Suggest => "suggest",
+        ApprovalRequirement::Required => "required",
     }
 }
 

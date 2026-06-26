@@ -1,5 +1,6 @@
 //! Compact session context inspector.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt::Write;
 
@@ -70,7 +71,7 @@ enum PromptLayerKind {
 }
 
 impl PromptLayerKind {
-    fn label(self, locale: Locale) -> &'static str {
+    fn label(self, locale: Locale) -> Cow<'static, str> {
         match self {
             Self::Static => tr(locale, MessageId::CtxInspCacheFriendly),
             Self::Dynamic => tr(locale, MessageId::CtxInspChangesByTurn),
@@ -139,7 +140,7 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
         tr(locale, MessageId::CtxInspWorkspaceStatus),
         app.workspace_context
             .as_deref()
-            .unwrap_or(tr(locale, MessageId::CtxInspNotSampledYet))
+            .unwrap_or(&*tr(locale, MessageId::CtxInspNotSampledYet))
     );
 
     let _ = writeln!(out);
@@ -244,7 +245,7 @@ fn push_system_prompt_structure(out: &mut String, app: &App, locale: Locale) {
                 let _ = writeln!(
                     out,
                     "    {first_line_lbl}: {}",
-                    block.text.lines().next().unwrap_or(empty_lbl)
+                    block.text.lines().next().unwrap_or(&*empty_lbl)
                 );
             } else {
                 let _ = writeln!(out, "  {volatile_lbl}: {none_lbl}");
@@ -401,7 +402,7 @@ fn push_tools(out: &mut String, app: &App, locale: Locale) {
     let mut rendered = 0usize;
     for detail in app.active_tool_details.values() {
         let location = tr(locale, MessageId::CtxInspActive);
-        push_tool_row(out, locale, location, detail);
+        push_tool_row(out, locale, &location, detail);
         rendered += 1;
         if rendered >= MAX_TOOL_ROWS {
             return;

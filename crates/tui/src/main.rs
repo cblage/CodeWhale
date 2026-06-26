@@ -16,6 +16,9 @@ use wait_timeout::ChildExt;
 
 use crate::dependencies::ExternalTool;
 
+use rust_i18n::i18n;
+i18n!("locales", fallback = ["en"]);
+
 mod acp_server;
 mod artifacts;
 mod audit;
@@ -43,6 +46,7 @@ mod execpolicy;
 mod features;
 mod fleet;
 mod goal_loop;
+mod hashing;
 mod hooks;
 mod llm_client;
 mod llm_response_cache;
@@ -82,6 +86,8 @@ mod runtime_log;
 mod runtime_threads;
 mod sandbox;
 mod seam_manager;
+#[allow(dead_code)]
+mod session_diagnostics;
 #[allow(dead_code)]
 mod session_manager;
 mod settings;
@@ -217,6 +223,8 @@ struct Cli {
 enum Commands {
     /// Run system diagnostics and check configuration
     Doctor(DoctorArgs),
+    /// Summarize failure signals from a local JSONL session log without raw content
+    SessionDiagnostics(SessionDiagnosticsArgs),
     /// Bootstrap MCP config and/or skills directories
     Setup(SetupArgs),
     /// Generate a remote CodeWhale agent deploy bundle (cloud + chat bridge)
@@ -382,7 +390,14 @@ enum ExecToolSurface {
 fn exec_tool_surface_from_env() -> Option<ExecToolSurface> {
     std::env::var(CODEWHALE_TOOL_SURFACE_ENV)
         .ok()
-        .and_then(|value| parse_exec_tool_surface(&value))
+        .and_then(|value| {
+            if should_warn_unknown_exec_tool_surface(&value) {
+                eprintln!(
+                    "warning: unrecognized {CODEWHALE_TOOL_SURFACE_ENV}; leaving exec tool surface unchanged. Use `shell-only`, `full`, or `native-tools`."
+                );
+            }
+            parse_exec_tool_surface(&value)
+        })
 }
 
 fn parse_exec_tool_surface(value: &str) -> Option<ExecToolSurface> {
@@ -391,6 +406,14 @@ fn parse_exec_tool_surface(value: &str) -> Option<ExecToolSurface> {
         "full" | "native-tools" | "native_tools" | "" => None,
         _ => None,
     }
+}
+
+fn should_warn_unknown_exec_tool_surface(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    !matches!(
+        normalized.as_str(),
+        "" | "shell-only" | "shell_only" | "shell" | "full" | "native-tools" | "native_tools"
+    )
 }
 
 fn normalize_exec_tool_names(tools: &[String]) -> Vec<String> {
@@ -681,6 +704,16 @@ struct DoctorArgs {
     /// Emit only the diagnostic context source map as JSON
     #[arg(long, default_value_t = false, conflicts_with = "json")]
     context_json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+struct SessionDiagnosticsArgs {
+    /// JSONL session log to inspect
+    #[arg(value_name = "JSONL")]
+    path: PathBuf,
+    /// Emit machine-readable JSON with redacted source handles
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1144,6 +1177,7 @@ async fn main() -> Result<()> {
                     Ok(())
                 }
             }
+            Commands::SessionDiagnostics(args) => run_session_diagnostics(args),
             Commands::Setup(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
@@ -2511,6 +2545,25 @@ fn run_setup_clean(checkpoints_dir: &Path, force: bool) -> Result<()> {
     println!("{}", "Cleaned checkpoints:".bold());
     for path in &removed {
         println!("  ✓ {}", path.display());
+    }
+    Ok(())
+}
+
+fn run_session_diagnostics(args: SessionDiagnosticsArgs) -> Result<()> {
+    let contents = std::fs::read_to_string(&args.path).with_context(|| {
+        format!(
+            "read session diagnostic JSONL from {}",
+            crate::utils::display_path(&args.path)
+        )
+    })?;
+    let summary = crate::session_diagnostics::analyze_session_failure_jsonl(&contents);
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        println!(
+            "{}",
+            crate::session_diagnostics::format_redacted_failure_summary(&summary)
+        );
     }
     Ok(())
 }
@@ -6376,11 +6429,34 @@ struct ExecStreamMeta {
     model: String,
     input_tokens: u32,
     output_tokens: u32,
+    input_analysis: ExecStreamInputAnalysis,
+    visible_final_answer_chars: usize,
     session_id: String,
     resume_command: String,
     workspace: String,
     message_count: usize,
     status: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize, PartialEq, Eq)]
+struct ExecStreamInputAnalysis {
+    estimated_request_tokens: usize,
+    estimated_message_content_tokens: usize,
+    estimated_system_tokens: usize,
+    estimated_framing_tokens: usize,
+    user_message_count: usize,
+    assistant_message_count: usize,
+    tool_message_count: usize,
+    tool_use_count: usize,
+    tool_result_count: usize,
+    text_chars: usize,
+    thinking_chars: usize,
+    tool_use_input_chars: usize,
+    tool_result_chars: usize,
+    text_estimated_tokens: usize,
+    thinking_estimated_tokens: usize,
+    tool_use_input_estimated_tokens: usize,
+    tool_result_estimated_tokens: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -6413,6 +6489,115 @@ enum ExecStreamEvent {
 fn emit_exec_stream_event(event: &ExecStreamEvent) -> Result<()> {
     println!("{}", serde_json::to_string(event)?);
     Ok(())
+}
+
+fn exec_stream_input_analysis(
+    messages: &[Message],
+    system: Option<&SystemPrompt>,
+) -> ExecStreamInputAnalysis {
+    let mut analysis = ExecStreamInputAnalysis {
+        estimated_request_tokens: crate::compaction::estimate_input_tokens_conservative(
+            messages, system,
+        ),
+        estimated_message_content_tokens: crate::compaction::estimate_tokens(messages),
+        estimated_system_tokens: exec_stream_estimate_system_tokens(system),
+        estimated_framing_tokens: messages.len().saturating_mul(12).saturating_add(48),
+        ..ExecStreamInputAnalysis::default()
+    };
+
+    for message in messages {
+        match message.role.as_str() {
+            "user" => analysis.user_message_count += 1,
+            "assistant" => analysis.assistant_message_count += 1,
+            "tool" => analysis.tool_message_count += 1,
+            _ => {}
+        }
+
+        for block in &message.content {
+            match block {
+                ContentBlock::Text { text, .. } => {
+                    exec_stream_add_text_estimate(
+                        text,
+                        &mut analysis.text_chars,
+                        &mut analysis.text_estimated_tokens,
+                    );
+                }
+                ContentBlock::Thinking { thinking, .. } => {
+                    exec_stream_add_text_estimate(
+                        thinking,
+                        &mut analysis.thinking_chars,
+                        &mut analysis.thinking_estimated_tokens,
+                    );
+                }
+                ContentBlock::ToolUse { input, .. } | ContentBlock::ServerToolUse { input, .. } => {
+                    analysis.tool_use_count += 1;
+                    exec_stream_add_json_estimate(
+                        input,
+                        &mut analysis.tool_use_input_chars,
+                        &mut analysis.tool_use_input_estimated_tokens,
+                    );
+                }
+                ContentBlock::ToolResult {
+                    content,
+                    content_blocks,
+                    ..
+                } => {
+                    analysis.tool_result_count += 1;
+                    exec_stream_add_text_estimate(
+                        content,
+                        &mut analysis.tool_result_chars,
+                        &mut analysis.tool_result_estimated_tokens,
+                    );
+                    if let Some(blocks) = content_blocks {
+                        exec_stream_add_json_estimate(
+                            blocks,
+                            &mut analysis.tool_result_chars,
+                            &mut analysis.tool_result_estimated_tokens,
+                        );
+                    }
+                }
+                ContentBlock::ToolSearchToolResult { content, .. }
+                | ContentBlock::CodeExecutionToolResult { content, .. } => {
+                    analysis.tool_result_count += 1;
+                    exec_stream_add_json_estimate(
+                        content,
+                        &mut analysis.tool_result_chars,
+                        &mut analysis.tool_result_estimated_tokens,
+                    );
+                }
+                ContentBlock::ImageUrl { .. } => {}
+            }
+        }
+    }
+
+    analysis
+}
+
+fn exec_stream_add_text_estimate(text: &str, chars: &mut usize, tokens: &mut usize) {
+    *chars = chars.saturating_add(text.chars().count());
+    *tokens = tokens.saturating_add(crate::compaction::estimate_text_tokens_conservative(text));
+}
+
+fn exec_stream_add_json_estimate<T: serde::Serialize>(
+    value: &T,
+    chars: &mut usize,
+    tokens: &mut usize,
+) {
+    let text = serde_json::to_string(value).unwrap_or_default();
+    exec_stream_add_text_estimate(&text, chars, tokens);
+}
+
+fn exec_stream_estimate_system_tokens(system: Option<&SystemPrompt>) -> usize {
+    match system {
+        Some(SystemPrompt::Text(text)) => {
+            crate::compaction::estimate_text_tokens_conservative(text)
+        }
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .iter()
+            .map(|block| crate::compaction::estimate_text_tokens_conservative(&block.text))
+            .sum(),
+        None => 0,
+    }
 }
 
 fn exec_saved_session_line(session_id: &str) -> String {
@@ -6682,6 +6867,7 @@ async fn run_exec_agent(
                 system_prompt_override: false,
                 model: saved.metadata.model,
                 workspace: saved.metadata.workspace,
+                mode,
             })
             .await?;
         loaded_session_id = Some(saved_id.clone());
@@ -6711,7 +6897,7 @@ async fn run_exec_agent(
             translation_enabled: false,
             show_thinking: settings.show_thinking,
             approval_mode: if auto_approve {
-                crate::tui::approval::ApprovalMode::Auto
+                crate::tui::approval::ApprovalMode::Bypass
             } else {
                 execution_config
                     .approval_policy
@@ -6958,6 +7144,11 @@ async fn run_exec_agent(
                             model: latest_model.clone(),
                             input_tokens: usage.input_tokens,
                             output_tokens: usage.output_tokens,
+                            input_analysis: exec_stream_input_analysis(
+                                &latest_messages,
+                                latest_system_prompt.as_ref(),
+                            ),
+                            visible_final_answer_chars: summary.output.chars().count(),
                             resume_command: saved_session_id
                                 .as_deref()
                                 .map(exec_stream_resume_hint)
@@ -7732,6 +7923,16 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    fn exec_unknown_tool_surface_env_warns_without_allowlist() {
+        assert!(should_warn_unknown_exec_tool_surface("shell_onyl"));
+        assert!(!should_warn_unknown_exec_tool_surface("shell-only"));
+        assert!(!should_warn_unknown_exec_tool_surface("native-tools"));
+        assert!(!should_warn_unknown_exec_tool_surface("full"));
+        assert!(!should_warn_unknown_exec_tool_surface(" "));
+        assert_eq!(parse_exec_tool_surface("shell_onyl"), None);
+    }
+
+    #[test]
     fn exec_rejects_zero_max_turns() {
         let err = Cli::try_parse_from(["codewhale", "exec", "--max-turns", "0", "hello"])
             .expect_err("max-turns must be >= 1");
@@ -7798,6 +7999,8 @@ mod terminal_mode_tests {
                 model: "deepseek-v4-flash".to_string(),
                 input_tokens: 123,
                 output_tokens: 45,
+                input_analysis: ExecStreamInputAnalysis::default(),
+                visible_final_answer_chars: 17,
                 session_id: exec_stream_session_ref(raw_session_id),
                 resume_command: exec_stream_resume_hint(raw_session_id),
                 workspace: "/tmp/work".to_string(),
@@ -7824,6 +8027,7 @@ mod terminal_mode_tests {
         );
         assert_eq!(parsed["meta"]["workspace"], "/tmp/work");
         assert_eq!(parsed["meta"]["message_count"], 4);
+        assert_eq!(parsed["meta"]["visible_final_answer_chars"], 17);
 
         let capture = ExecStreamEvent::SessionCapture {
             content: exec_stream_session_ref(raw_session_id),
@@ -7834,6 +8038,71 @@ mod terminal_mode_tests {
             serde_json::from_str(&capture_json).expect("valid json");
         assert_eq!(parsed_capture["type"], "session_capture");
         assert_ne!(parsed_capture["content"], raw_session_id);
+    }
+
+    #[test]
+    fn exec_stream_input_analysis_reports_prompt_composition() {
+        let system = SystemPrompt::Text("system rules".to_string());
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "run tests".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "checking context".to_string(),
+                        signature: None,
+                    },
+                    ContentBlock::Text {
+                        text: "working".to_string(),
+                        cache_control: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".to_string(),
+                        name: "exec_shell".to_string(),
+                        input: serde_json::json!({"command": "cargo test"}),
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".to_string(),
+                    content: "stdout line\nstderr line".to_string(),
+                    is_error: Some(false),
+                    content_blocks: Some(vec![serde_json::json!({
+                        "type": "text",
+                        "text": "structured output"
+                    })]),
+                }],
+            },
+        ];
+
+        let analysis = exec_stream_input_analysis(&messages, Some(&system));
+
+        assert_eq!(analysis.user_message_count, 2);
+        assert_eq!(analysis.assistant_message_count, 1);
+        assert_eq!(analysis.tool_message_count, 0);
+        assert_eq!(analysis.tool_use_count, 1);
+        assert_eq!(analysis.tool_result_count, 1);
+        assert_eq!(analysis.thinking_chars, "checking context".chars().count());
+        assert!(analysis.text_chars >= "run testsworking".chars().count());
+        assert!(analysis.tool_use_input_chars > 0);
+        assert!(analysis.tool_result_chars >= "stdout line\nstderr line".chars().count());
+        assert!(analysis.estimated_system_tokens > 0);
+        assert!(analysis.estimated_message_content_tokens > 0);
+        assert!(
+            analysis.estimated_request_tokens
+                >= analysis.estimated_system_tokens
+                    + analysis.estimated_message_content_tokens
+                    + analysis.estimated_framing_tokens
+        );
     }
 
     #[test]

@@ -79,6 +79,16 @@ test("state/message/runtime helpers preserve bridge behavior", () => {
     { model: "m", replyToMessageId: "r" }
   );
   assert.deepEqual(splitMessage("a🧪b", 2), ["a🧪", "b"]);
+  assert.deepEqual(splitMessage("alpha beta gamma", 12), ["alpha beta ", "gamma"]);
+  const fenced = splitMessage("```js\nconst first = 1;\nconst second = 2;\n```\nDone", 24);
+  assert.ok(fenced.length > 1);
+  assert.equal(fenced[0].endsWith("\n```"), true);
+  assert.equal(fenced[1].startsWith("```js\n"), true);
+  assert.equal(fenced.at(-1).includes("Done"), true);
+  for (const chunk of fenced) {
+    assert.ok(Array.from(chunk).length <= 24);
+    assert.equal((chunk.match(/```/g) || []).length % 2, 0);
+  }
   assert.deepEqual(activeTurnBlock({ turns: [{ id: "t1", status: "queued" }] }), {
     turnId: "t1",
     message: "Thread already has active turn t1. Wait for it to finish or send /interrupt."
@@ -116,6 +126,23 @@ test("ThreadStore supports chat state, message dedupe, and action tokens", async
     const saved = await ThreadStore.open(statePath, { messageLimit: 2, actions: true });
     assert.equal((await saved.getChat("chat-a")).threadId, "thread-a");
     assert.deepEqual(saved.data.messages, ["m2", "m3"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ThreadStore persists numeric cursors", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "codewhale-bridge-core-"));
+  try {
+    const statePath = path.join(dir, "thread-map.json");
+    const store = await ThreadStore.open(statePath);
+
+    assert.equal(store.getCursor("telegram.update_offset", 7), 7);
+    assert.equal(await store.setCursor("telegram.update_offset", 42), 42);
+    assert.equal(store.getCursor("telegram.update_offset"), 42);
+
+    const saved = await ThreadStore.open(statePath);
+    assert.equal(saved.getCursor("telegram.update_offset"), 42);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

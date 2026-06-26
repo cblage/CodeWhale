@@ -5,12 +5,12 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::CommandResult;
+use crate::commands::CommandResult;
 
 const USAGE: &str = "/note <text> | /note add <text> | /note list | /note show <n> | /note edit <n> <text> | /note remove <n> | /note clear | /note path";
 
 /// Manage the persistent workspace notes file.
-pub fn note(app: &mut App, content: Option<&str>) -> CommandResult {
+fn note(app: &mut App, content: Option<&str>) -> CommandResult {
     let input = match content {
         Some(c) => c.trim(),
         None => {
@@ -264,6 +264,29 @@ fn parse_note_index(rest: Option<&str>, note_count: usize, usage: &str) -> Resul
         ));
     }
     Ok(index - 1)
+}
+
+pub(in crate::commands) const COMMAND_INFO: crate::commands::traits::CommandInfo =
+    crate::commands::traits::CommandInfo {
+        name: "note",
+        aliases: &[],
+        usage: "/note [add|list|show|edit|remove|clear|path]",
+        description_id: crate::localization::MessageId::CmdNoteDescription,
+    };
+
+pub(in crate::commands) struct NoteCmd;
+
+impl crate::commands::traits::RegisterCommand for NoteCmd {
+    fn info() -> &'static crate::commands::traits::CommandInfo {
+        &COMMAND_INFO
+    }
+
+    fn execute(
+        app: &mut crate::tui::app::App,
+        arg: Option<&str>,
+    ) -> crate::commands::CommandResult {
+        note(app, arg)
+    }
 }
 
 #[cfg(test)]

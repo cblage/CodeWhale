@@ -484,7 +484,7 @@ Previous release.\n";
             let result = change(&mut app, None);
             assert!(!result.is_error, "Failed for locale {locale:?}");
             let msg = result.message.expect("should have a message");
-            assert!(msg.contains(tr(locale, MessageId::CmdChangeTranslationQueued)));
+            assert!(msg.contains(&*tr(locale, MessageId::CmdChangeTranslationQueued)));
             assert!(
                 matches!(result.action, Some(AppAction::SendMessage(_))),
                 "Non-English locale should send translation, got {:?}",
@@ -516,7 +516,7 @@ Previous release.\n";
         let result = change(&mut app, None);
         assert!(!result.is_error);
         let msg = result.message.expect("should have a message");
-        assert!(msg.contains(tr(
+        assert!(msg.contains(&*tr(
             Locale::ZhHans,
             MessageId::CmdChangeTranslationUnavailable
         )));
@@ -534,7 +534,7 @@ Previous release.\n";
         let result = change(&mut app, None);
         assert!(!result.is_error);
         let msg = result.message.expect("should have a message");
-        assert!(msg.contains(tr(Locale::Ja, MessageId::CmdChangeTranslationUnavailable)));
+        assert!(msg.contains(&*tr(Locale::Ja, MessageId::CmdChangeTranslationUnavailable)));
         assert!(
             result.action.is_none(),
             "offline mode should not send translation"

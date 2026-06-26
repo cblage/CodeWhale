@@ -194,41 +194,79 @@ pub enum HotbarSourceDispatchBoundary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotbarSourceSafetyMode {
+    /// Pressing the bound hotbar slot directly fires the existing action path.
+    DirectFire,
+    /// Pressing the bound hotbar slot opens/prefills the composer for arguments.
+    ComposerPrefill,
+    /// The source must not register bindable actions until its gates are wired.
+    Disabled,
+    /// The source may dispatch only through an approval/trust-enforced path.
+    ApprovalGated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HotbarSourceDescriptor {
     pub category: HotbarActionCategory,
     pub boundary: HotbarSourceDispatchBoundary,
+    pub safety_modes: &'static [HotbarSourceSafetyMode],
     pub dispatch_path: &'static str,
     pub status: &'static str,
 }
+
+impl HotbarSourceDescriptor {
+    #[must_use]
+    pub fn registers_dispatchable_actions(self) -> bool {
+        self.boundary != HotbarSourceDispatchBoundary::Deferred
+            && !self
+                .safety_modes
+                .contains(&HotbarSourceSafetyMode::Disabled)
+    }
+}
+
+const HOTBAR_DIRECT_APP_SAFETY: &[HotbarSourceSafetyMode] = &[HotbarSourceSafetyMode::DirectFire];
+const HOTBAR_SLASH_SAFETY: &[HotbarSourceSafetyMode] = &[
+    HotbarSourceSafetyMode::DirectFire,
+    HotbarSourceSafetyMode::ComposerPrefill,
+];
+const HOTBAR_DEFERRED_SAFETY: &[HotbarSourceSafetyMode] = &[
+    HotbarSourceSafetyMode::Disabled,
+    HotbarSourceSafetyMode::ApprovalGated,
+];
 
 const HOTBAR_SOURCE_DESCRIPTORS: &[HotbarSourceDescriptor] = &[
     HotbarSourceDescriptor {
         category: HotbarActionCategory::App,
         boundary: HotbarSourceDispatchBoundary::DirectApp,
+        safety_modes: HOTBAR_DIRECT_APP_SAFETY,
         dispatch_path: "AppHotbarAction::dispatch",
         status: "dispatchable",
     },
     HotbarSourceDescriptor {
         category: HotbarActionCategory::Slash,
         boundary: HotbarSourceDispatchBoundary::SlashCommand,
+        safety_modes: HOTBAR_SLASH_SAFETY,
         dispatch_path: "commands::execute or composer prefill for required arguments",
         status: "dispatchable",
     },
     HotbarSourceDescriptor {
         category: HotbarActionCategory::Mcp,
         boundary: HotbarSourceDispatchBoundary::Deferred,
+        safety_modes: HOTBAR_DEFERRED_SAFETY,
         dispatch_path: "command palette / MCP manager until tool args and approvals are wired",
         status: "exploratory",
     },
     HotbarSourceDescriptor {
         category: HotbarActionCategory::Skill,
         boundary: HotbarSourceDispatchBoundary::Deferred,
+        safety_modes: HOTBAR_DEFERRED_SAFETY,
         dispatch_path: "command palette / skill command until activation receipts are wired",
         status: "exploratory",
     },
     HotbarSourceDescriptor {
         category: HotbarActionCategory::Plugin,
         boundary: HotbarSourceDispatchBoundary::Deferred,
+        safety_modes: HOTBAR_DEFERRED_SAFETY,
         dispatch_path: "plugin command/tool registry until plugin approval gates are wired",
         status: "exploratory",
     },
@@ -409,7 +447,17 @@ impl HotbarActionRegistry {
         );
         debug_assert!(!descriptor.dispatch_path.trim().is_empty());
         debug_assert!(!descriptor.status.trim().is_empty());
+        debug_assert!(!descriptor.safety_modes.is_empty());
+        let before = self.actions.len();
         source.register_actions(self);
+        if !descriptor.registers_dispatchable_actions() {
+            assert_eq!(
+                self.actions.len(),
+                before,
+                "deferred hotbar source {:?} must not register dispatchable actions before safety gates are wired",
+                descriptor.category
+            );
+        }
     }
 
     pub(crate) fn register_builtins(&mut self) {
@@ -460,6 +508,13 @@ impl HotbarActionSource for BuiltinHotbarActionSource {
             "Agent mode",
             "Switch the conversation into Agent mode.",
             AppHotbarKind::Mode(AppMode::Agent),
+        ));
+        registry.register(AppHotbarAction::new(
+            "mode.auto",
+            "auto",
+            "Auto mode",
+            "Switch the conversation into Auto mode.",
+            AppHotbarKind::Mode(AppMode::Auto),
         ));
         registry.register(AppHotbarAction::new(
             "mode.yolo",
@@ -951,6 +1006,24 @@ mod tests {
         }
     }
 
+    struct DeferredTestHotbarSource;
+
+    impl HotbarActionSource for DeferredTestHotbarSource {
+        fn descriptor(&self) -> HotbarSourceDescriptor {
+            HOTBAR_SOURCE_DESCRIPTORS
+                .iter()
+                .copied()
+                .find(|descriptor| descriptor.category == HotbarActionCategory::Mcp)
+                .expect("mcp descriptor exists")
+        }
+
+        fn register_actions(&self, registry: &mut HotbarActionRegistry) {
+            registry.register(TestHotbarAction {
+                id: "mcp.deferred-test",
+            });
+        }
+    }
+
     #[test]
     #[should_panic(expected = "duplicate hotbar action id duplicate.action")]
     fn registry_rejects_duplicate_action_ids() {
@@ -1028,15 +1101,31 @@ mod tests {
             descriptors
                 .iter()
                 .find(|descriptor| descriptor.category == HotbarActionCategory::App)
-                .map(|descriptor| descriptor.boundary),
-            Some(HotbarSourceDispatchBoundary::DirectApp)
+                .map(|descriptor| (
+                    descriptor.boundary,
+                    descriptor.safety_modes,
+                    descriptor.registers_dispatchable_actions()
+                )),
+            Some((
+                HotbarSourceDispatchBoundary::DirectApp,
+                HOTBAR_DIRECT_APP_SAFETY,
+                true
+            ))
         );
         assert_eq!(
             descriptors
                 .iter()
                 .find(|descriptor| descriptor.category == HotbarActionCategory::Slash)
-                .map(|descriptor| descriptor.boundary),
-            Some(HotbarSourceDispatchBoundary::SlashCommand)
+                .map(|descriptor| (
+                    descriptor.boundary,
+                    descriptor.safety_modes,
+                    descriptor.registers_dispatchable_actions()
+                )),
+            Some((
+                HotbarSourceDispatchBoundary::SlashCommand,
+                HOTBAR_SLASH_SAFETY,
+                true
+            ))
         );
         for category in [
             HotbarActionCategory::Mcp,
@@ -1048,8 +1137,20 @@ mod tests {
                 .find(|descriptor| descriptor.category == category)
                 .unwrap_or_else(|| panic!("missing descriptor for {category:?}"));
             assert_eq!(descriptor.boundary, HotbarSourceDispatchBoundary::Deferred);
+            assert_eq!(descriptor.safety_modes, HOTBAR_DEFERRED_SAFETY);
             assert_eq!(descriptor.status, "exploratory");
+            assert!(
+                !descriptor.registers_dispatchable_actions(),
+                "deferred {category:?} source must not be dispatchable"
+            );
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "deferred hotbar source Mcp must not register dispatchable actions")]
+    fn deferred_sources_cannot_register_dispatchable_actions() {
+        let mut registry = HotbarActionRegistry::new();
+        registry.register_source(&DeferredTestHotbarSource);
     }
 
     #[test]
@@ -1305,6 +1406,7 @@ mod tests {
             vec![
                 "filetree.toggle",
                 "mode.agent",
+                "mode.auto",
                 "mode.plan",
                 "mode.yolo",
                 "palette.open",
@@ -1410,6 +1512,7 @@ mod tests {
         let registry = HotbarActionRegistry::with_builtins();
         let plan = registry.get("mode.plan").expect("plan action");
         let agent = registry.get("mode.agent").expect("agent action");
+        let auto = registry.get("mode.auto").expect("auto action");
         let yolo = registry.get("mode.yolo").expect("yolo action");
         let mut app = test_app();
 
@@ -1423,6 +1526,14 @@ mod tests {
         assert_eq!(app.mode, AppMode::Plan);
         assert!(plan.is_active(&app));
         assert!(!agent.is_active(&app));
+
+        assert_eq!(
+            auto.dispatch(&mut app).expect("dispatch auto"),
+            HotbarDispatch::AppAction(AppAction::ModeChanged(AppMode::Auto))
+        );
+        assert!(app.allow_shell);
+        assert!(!app.trust_mode);
+        assert!(auto.is_active(&app));
 
         assert_eq!(
             yolo.dispatch(&mut app).expect("dispatch yolo"),

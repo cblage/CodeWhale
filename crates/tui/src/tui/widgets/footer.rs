@@ -146,7 +146,7 @@ pub fn footer_working_label(frame: u64, locale: Locale) -> String {
     let dots = (frame % 4) as usize;
     let base = tr(locale, MessageId::FooterWorking);
     let mut out = String::with_capacity(base.len() + dots);
-    out.push_str(base);
+    out.push_str(&base);
     for _ in 0..dots {
         out.push('.');
     }
@@ -302,11 +302,13 @@ impl FooterProps {
 fn mode_style(app: &App) -> (&'static str, Color) {
     let label = match app.mode {
         AppMode::Agent => "agent",
+        AppMode::Auto => "auto",
         AppMode::Yolo => "yolo",
         AppMode::Plan => "plan",
     };
     let color = match app.mode {
         AppMode::Agent => app.ui_theme.mode_agent,
+        AppMode::Auto => app.ui_theme.mode_agent,
         AppMode::Yolo => app.ui_theme.mode_yolo,
         AppMode::Plan => app.ui_theme.mode_plan,
     };

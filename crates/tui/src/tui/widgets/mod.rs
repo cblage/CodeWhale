@@ -22,6 +22,7 @@ pub use footer::{
 pub use header::{HeaderData, HeaderWidget, header_status_indicator_frame};
 pub use renderable::Renderable;
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -618,6 +619,7 @@ impl<'a> ComposerWidget<'a> {
     fn mode_color(&self) -> Color {
         match self.app.mode {
             AppMode::Agent => palette::MODE_AGENT,
+            AppMode::Auto => palette::MODE_AGENT,
             AppMode::Yolo => palette::MODE_YOLO,
             AppMode::Plan => palette::MODE_PLAN,
         }
@@ -744,15 +746,18 @@ impl Renderable for ComposerWidget<'_> {
                 .border_style(Style::default().fg(border_color))
                 .style(background);
             if self.app.is_history_search_active() || is_draft_mode {
-                block = block.title(Line::from(Span::styled(
-                    if self.app.is_history_search_active() {
+                block = if self.app.is_history_search_active() {
+                    block.title(Line::from(Span::styled(
                         self.app
-                            .tr(crate::localization::MessageId::HistorySearchTitle)
-                    } else {
-                        "Draft"
-                    },
-                    Style::default().fg(palette::TEXT_MUTED),
-                )));
+                            .tr(crate::localization::MessageId::HistorySearchTitle),
+                        Style::default().fg(palette::TEXT_MUTED),
+                    )))
+                } else {
+                    block.title(Line::from(Span::styled(
+                        "Draft",
+                        Style::default().fg(palette::TEXT_MUTED),
+                    )))
+                };
             }
             // Top-right corner: editor state plus transient turn receipts.
             // Receipts are lifecycle chrome, not transcript content; they
@@ -770,25 +775,23 @@ impl Renderable for ComposerWidget<'_> {
 
         let mut input_lines = Vec::new();
         if input_text.is_empty() {
-            if let Some(ref suggestion) = self.app.prompt_suggestion
-                && !self.app.is_history_search_active()
-            {
-                input_lines.push(Line::from(Span::styled(
-                    suggestion.as_str(),
-                    Style::default().fg(palette::TEXT_HINT),
-                )));
-            } else {
-                let placeholder = if self.app.is_history_search_active() {
-                    self.app
-                        .tr(crate::localization::MessageId::HistorySearchPlaceholder)
+            input_lines.push(Line::from(""));
+            if input_rows_budget > 1 {
+                let (placeholder, style): (Cow<'_, str>, Style) = if let Some(ref suggestion) =
+                    self.app.prompt_suggestion
+                    && !self.app.is_history_search_active()
+                {
+                    (
+                        Cow::Borrowed(suggestion.as_str()),
+                        Style::default().fg(palette::TEXT_HINT),
+                    )
                 } else {
-                    self.app
-                        .tr(crate::localization::MessageId::ComposerPlaceholder)
+                    (
+                        composer_empty_hint_text(self.app),
+                        Style::default().fg(palette::TEXT_MUTED).italic(),
+                    )
                 };
-                input_lines.push(Line::from(Span::styled(
-                    placeholder,
-                    Style::default().fg(palette::TEXT_MUTED).italic(),
-                )));
+                input_lines.push(Line::from(Span::styled(placeholder, style)));
             }
         } else if let Some((sel_start, sel_end)) = self.app.selection_range() {
             let line_ranges: Vec<(usize, usize)> =
@@ -820,20 +823,18 @@ impl Renderable for ComposerWidget<'_> {
         }
 
         // For non-empty input, input_lines.len() already reflects wrapping via
-        // layout_input.  For the empty-input placeholder, Paragraph::wrap will
-        // wrap the single Line at render time, so we must estimate the wrapped
-        // row count ourselves to keep padding accurate on narrow widths.
+        // layout_input. For empty input, keep the first row reserved for the
+        // real terminal cursor so IME preedit text has a clean surface.
         let visual_rows = if input_text.is_empty() {
-            let placeholder: &str = if let Some(ref suggestion) = self.app.prompt_suggestion {
-                suggestion.as_str()
-            } else if self.app.is_history_search_active() {
-                self.app
-                    .tr(crate::localization::MessageId::HistorySearchPlaceholder)
+            let hint: Option<Cow<'_, str>> = if let Some(ref suggestion) =
+                self.app.prompt_suggestion
+                && !self.app.is_history_search_active()
+            {
+                Some(Cow::Borrowed(suggestion.as_str()))
             } else {
-                self.app
-                    .tr(crate::localization::MessageId::ComposerPlaceholder)
+                Some(composer_empty_hint_text(self.app))
             };
-            placeholder_visual_lines_for(placeholder, content_width)
+            empty_composer_visual_rows(hint.as_deref(), content_width, input_rows_budget)
         } else {
             input_lines.len()
         };
@@ -1131,16 +1132,15 @@ impl Renderable for ComposerWidget<'_> {
         let (visible_lines, cursor_row, cursor_col) =
             layout_input(input_text, input_cursor, content_width, input_rows_budget);
         let visual_rows = if input_text.is_empty() {
-            let placeholder: &str = if let Some(ref suggestion) = self.app.prompt_suggestion {
-                suggestion.as_str()
-            } else if self.app.is_history_search_active() {
-                self.app
-                    .tr(crate::localization::MessageId::HistorySearchPlaceholder)
+            let hint: Option<Cow<'_, str>> = if let Some(ref suggestion) =
+                self.app.prompt_suggestion
+                && !self.app.is_history_search_active()
+            {
+                Some(Cow::Borrowed(suggestion.as_str()))
             } else {
-                self.app
-                    .tr(crate::localization::MessageId::ComposerPlaceholder)
+                Some(composer_empty_hint_text(self.app))
             };
-            placeholder_visual_lines_for(placeholder, content_width)
+            empty_composer_visual_rows(hint.as_deref(), content_width, input_rows_budget)
         } else {
             visible_lines.len()
         };
@@ -1190,9 +1190,9 @@ const APPROVAL_CARD_MIN_HEIGHT: u16 = 18;
 /// Minimum card width — anything tighter makes approval copy wrap too
 /// aggressively on small terminals.
 const APPROVAL_CARD_MIN_WIDTH: u16 = 40;
-/// Maximum card height — taller cards stop reading like a focused
-/// takeover and waste vertical space on large terminals.
-const APPROVAL_CARD_MAX_HEIGHT: u16 = 28;
+/// Maximum card height — tall enough for approval controls plus save-rule
+/// previews, while still reading like a focused takeover on large terminals.
+const APPROVAL_CARD_MAX_HEIGHT: u16 = 32;
 /// Maximum card width — readability craters past this on wide terminals.
 const APPROVAL_CARD_MAX_WIDTH: u16 = 96;
 
@@ -1306,7 +1306,11 @@ impl Renderable for ApprovalWidget<'_> {
                 let summary_lines: Vec<&str> = summary.lines().collect();
                 let intent_lines = if compact_vertical { 1 } else { 3 };
                 for (i, sline) in summary_lines.iter().take(intent_lines).enumerate() {
-                    let prefix = if i == 0 { intent_label } else { "  " };
+                    let prefix = if i == 0 {
+                        intent_label.clone()
+                    } else {
+                        Cow::Borrowed("  ")
+                    };
                     let truncated = crate::utils::truncate_with_ellipsis(sline, max_width, "...");
                     lines.push(Line::from(vec![
                         Span::raw("  "),
@@ -1337,39 +1341,44 @@ impl Renderable for ApprovalWidget<'_> {
         }
         let details = self.request.prominent_detail_items(locale);
         if details.is_empty() {
-            let params_str = self.request.params_display();
-            let params_width = card_area.width.saturating_sub(14) as usize;
-            let params_truncated =
-                crate::utils::truncate_with_ellipsis(&params_str, params_width.max(20), "...");
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    label_params(locale),
-                    Style::default().fg(palette::TEXT_HINT),
-                ),
-                Span::styled(
-                    params_truncated,
-                    Style::default().fg(palette::TEXT_SECONDARY),
-                ),
-            ]));
+            push_params_detail_line(&mut lines, self.request, locale, card_area.width);
         } else {
             let detail_limit = if compact_vertical { 2 } else { 4 };
+            let mut rendered_detail = false;
             for detail in details.iter().take(detail_limit) {
-                if self.request.category == ToolCategory::Shell
-                    && matches!(detail.label.as_str(), "Command" | "命令")
-                    && let Some(shell_lines) = detail.shell_lines.as_deref()
-                {
+                let multiline_preview = detail.shell_lines.as_deref();
+                let is_command_detail = matches!(detail.label.as_str(), "Command" | "命令");
+                let is_change_preview = matches!(detail.label.as_str(), "Preview" | "预览");
+                if compact_vertical && is_change_preview {
+                    continue;
+                }
+                if let Some(shell_lines) = multiline_preview {
                     let command_width = card_area.width.saturating_sub(10) as usize;
+                    let max_rows = if is_change_preview {
+                        if self.request.intent_summary.is_some() {
+                            Some(3)
+                        } else {
+                            Some(5)
+                        }
+                    } else if compact_vertical && is_command_detail {
+                        Some(3)
+                    } else {
+                        None
+                    };
                     push_shell_command_lines(
                         &mut lines,
                         &detail.label,
                         shell_lines,
                         command_width.max(20),
-                        if compact_vertical { Some(3) } else { None },
+                        max_rows,
                     );
                 } else {
                     push_detail_line(&mut lines, &detail.label, &detail.value);
                 }
+                rendered_detail = true;
+            }
+            if !rendered_detail {
+                push_params_detail_line(&mut lines, self.request, locale, card_area.width);
             }
         }
 
@@ -1383,6 +1392,16 @@ impl Renderable for ApprovalWidget<'_> {
             );
         } else {
             lines.push(Line::from(""));
+
+            if let Some(preview) = self.request.ask_rule_save_preview() {
+                push_ask_rule_save_preview(
+                    &mut lines,
+                    &preview,
+                    palette_colors.shortcut,
+                    card_area.width,
+                );
+                lines.push(Line::from(""));
+            }
 
             let options = approval_options_for(risk, locale);
 
@@ -1567,14 +1586,14 @@ fn approval_option_style(is_selected: bool, color: Color) -> Style {
     }
 }
 
-fn risk_badge_text(risk: RiskLevel, locale: Locale) -> &'static str {
+fn risk_badge_text(risk: RiskLevel, locale: Locale) -> Cow<'static, str> {
     match risk {
         RiskLevel::Benign => tr(locale, MessageId::ApprovalRiskReview),
         RiskLevel::Destructive => tr(locale, MessageId::ApprovalRiskDestructive),
     }
 }
 
-fn category_label_for(category: ToolCategory, locale: Locale) -> (&'static str, Color) {
+fn category_label_for(category: ToolCategory, locale: Locale) -> (Cow<'static, str>, Color) {
     let label = match category {
         ToolCategory::Safe => tr(locale, MessageId::ApprovalCategorySafe),
         ToolCategory::FileWrite => tr(locale, MessageId::ApprovalCategoryFileWrite),
@@ -1596,23 +1615,23 @@ fn category_label_for(category: ToolCategory, locale: Locale) -> (&'static str, 
     (label, color)
 }
 
-fn approval_word(locale: Locale) -> &'static str {
+fn approval_word(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalBlockTitle)
 }
 
-fn label_type(locale: Locale) -> &'static str {
+fn label_type(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalFieldType)
 }
 
-fn label_about(locale: Locale) -> &'static str {
+fn label_about(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalFieldAbout)
 }
 
-fn label_impact(locale: Locale) -> &'static str {
+fn label_impact(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalFieldImpact)
 }
 
-fn label_params(locale: Locale) -> &'static str {
+fn label_params(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalFieldParams)
 }
 
@@ -1627,6 +1646,62 @@ fn push_detail_line(lines: &mut Vec<Line<'static>>, label: &str, value: &str) {
         ),
         Span::styled(value.to_string(), Style::default().fg(palette::TEXT_BODY)),
     ]));
+}
+
+fn push_params_detail_line(
+    lines: &mut Vec<Line<'static>>,
+    request: &ApprovalRequest,
+    locale: Locale,
+    card_width: u16,
+) {
+    let params_str = request.params_display();
+    let params_width = card_width.saturating_sub(14) as usize;
+    let params_truncated =
+        crate::utils::truncate_with_ellipsis(&params_str, params_width.max(20), "...");
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            label_params(locale),
+            Style::default().fg(palette::TEXT_HINT),
+        ),
+        Span::styled(
+            params_truncated,
+            Style::default().fg(palette::TEXT_SECONDARY),
+        ),
+    ]));
+}
+
+fn push_ask_rule_save_preview(
+    lines: &mut Vec<Line<'static>>,
+    preview: &crate::tui::approval::AskRuleSavePreview,
+    shortcut: Color,
+    card_width: u16,
+) {
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            "Save:   ",
+            Style::default().fg(shortcut).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(preview.summary(), Style::default().fg(palette::TEXT_BODY)),
+    ]));
+
+    let entry_width = card_width.saturating_sub(10) as usize;
+    let entries = preview.entries.join("; ");
+    let truncated = crate::utils::truncate_with_ellipsis(&entries, entry_width.max(20), "...");
+    lines.push(Line::from(vec![
+        Span::raw("    "),
+        Span::styled(truncated, Style::default().fg(palette::TEXT_SECONDARY)),
+    ]));
+    if preview.omitted > 0 {
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                format!("... {} more", preview.omitted),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
+        ]));
+    }
 }
 
 fn push_shell_command_lines(
@@ -1768,7 +1843,7 @@ fn destructive_approval_semantics(locale: Locale) -> [(&'static str, &'static st
     }
 }
 
-fn footer_controls(locale: Locale) -> &'static str {
+fn footer_controls(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalControlsHint)
 }
 
@@ -1779,16 +1854,16 @@ fn save_ask_rule_hint(locale: Locale) -> &'static str {
     }
 }
 
-fn selection_hint_prefix(locale: Locale) -> &'static str {
+fn selection_hint_prefix(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalChooseHint)
 }
 
-fn selection_hint_value(locale: Locale) -> &'static str {
+fn selection_hint_value(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalChooseAction)
 }
 
 struct ApprovalOptionRow {
-    label: &'static str,
+    label: Cow<'static, str>,
     key_hint: &'static str,
     dangerous: bool,
 }
@@ -1819,19 +1894,19 @@ fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 
     ]
 }
 
-fn option_approve_once(locale: Locale) -> &'static str {
+fn option_approve_once(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalOptionApproveOnce)
 }
 
-fn option_approve_always(locale: Locale) -> &'static str {
+fn option_approve_always(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalOptionApproveAlways)
 }
 
-fn option_deny(locale: Locale) -> &'static str {
+fn option_deny(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalOptionDeny)
 }
 
-fn option_abort(locale: Locale) -> &'static str {
+fn option_abort(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalOptionAbortTurn)
 }
 
@@ -2253,7 +2328,7 @@ fn composer_top_right_chrome(app: &App, area_width: u16) -> Option<Line<'static>
         let receipt_text = receipt.trim();
         if app.composer.vim_enabled {
             let vim_label = app.composer.vim_mode.label_localized(app.ui_locale);
-            let vim_width = UnicodeWidthStr::width(vim_label);
+            let vim_width = UnicodeWidthStr::width(&*vim_label);
             let sep_width = UnicodeWidthStr::width(" · ");
             if vim_width + sep_width + 4 <= max_width {
                 let receipt_width = max_width.saturating_sub(vim_width + sep_width);
@@ -2278,7 +2353,7 @@ fn composer_top_right_chrome(app: &App, area_width: u16) -> Option<Line<'static>
     if app.composer.vim_enabled {
         spans.push(Span::styled(
             truncate_display_width(
-                app.composer.vim_mode.label_localized(app.ui_locale),
+                &app.composer.vim_mode.label_localized(app.ui_locale),
                 max_width,
             ),
             vim_mode_style(app.composer.vim_mode),
@@ -2383,6 +2458,28 @@ fn placeholder_visual_lines(content_width: usize) -> usize {
 
 fn placeholder_visual_lines_for(placeholder: &str, content_width: usize) -> usize {
     wrap_text(placeholder, content_width).len().max(1)
+}
+
+pub(crate) fn composer_empty_hint_text(app: &App) -> Cow<'static, str> {
+    if app.is_history_search_active() {
+        app.tr(crate::localization::MessageId::HistorySearchPlaceholder)
+    } else {
+        app.tr(crate::localization::MessageId::ComposerPlaceholder)
+    }
+}
+
+pub(crate) fn empty_composer_visual_rows(
+    hint: Option<&str>,
+    content_width: usize,
+    rows_budget: usize,
+) -> usize {
+    if rows_budget <= 1 {
+        1
+    } else {
+        1 + hint
+            .map(|text| placeholder_visual_lines_for(text, content_width))
+            .unwrap_or(0)
+    }
 }
 
 fn composer_min_input_rows(density: ComposerDensity) -> usize {
@@ -3139,12 +3236,13 @@ fn line_spans_with_selection<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalWidget, COMPOSER_PANEL_HEIGHT, ChatWidget, ComposerWidget, Renderable,
-        SlashMenuEntry, apply_detail_target_highlight, apply_selection_to_line, apply_send_flash,
-        build_empty_state_lines, composer_height, composer_max_height, composer_min_input_rows,
-        composer_top_padding, compute_takeover_area, cursor_row_col, layout_input,
-        pad_lines_to_bottom, placeholder_visual_lines, push_command_entry,
-        should_render_empty_state, slash_completion_hints, wrap_input_lines, wrap_text,
+        ApprovalWidget, COMPOSER_PANEL_HEIGHT, COMPOSER_PLACEHOLDER, ChatWidget, ComposerWidget,
+        Renderable, SlashMenuEntry, apply_detail_target_highlight, apply_selection_to_line,
+        apply_send_flash, build_empty_state_lines, composer_height, composer_max_height,
+        composer_min_input_rows, composer_top_padding, compute_takeover_area, cursor_row_col,
+        empty_composer_visual_rows, layout_input, pad_lines_to_bottom, placeholder_visual_lines,
+        push_command_entry, should_render_empty_state, slash_completion_hints, wrap_input_lines,
+        wrap_text,
     };
     use crate::config::{ApiProvider, Config};
     use crate::localization::Locale;
@@ -3197,6 +3295,25 @@ mod tests {
                 text.push_str(buf[(x, y)].symbol());
             }
             text.push('\n');
+        }
+        text
+    }
+
+    fn render_approval_request(
+        request: &crate::tui::approval::ApprovalRequest,
+        area: Rect,
+    ) -> String {
+        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let widget = ApprovalWidget::new(request, &view);
+        let mut buf = Buffer::empty(area);
+        widget.render(area, &mut buf);
+        buffer_text(&buf, area)
+    }
+
+    fn row_text(buf: &Buffer, area: Rect, row: u16) -> String {
+        let mut text = String::new();
+        for x in area.x..area.x.saturating_add(area.width) {
+            text.push_str(buf[(x, row)].symbol());
         }
         text
     }
@@ -4005,7 +4122,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_composer_cursor_matches_placeholder_padding() {
+    fn empty_composer_cursor_sits_above_placeholder_hint() {
         let mut app = create_test_app();
         // Pin density so the test is independent of any loaded user settings.
         app.composer_density = ComposerDensity::Comfortable;
@@ -4023,15 +4140,19 @@ mod tests {
 
         // inner_area: {x:1, y:1, w:38, h:3}  (borders shrink by 1 each side)
         // input_rows_budget = 3
-        // placeholder_visual_lines(38) = 1  (placeholder is 22 chars, fits in 38)
-        // top_padding = 3 - clamp(1, 1, 3) = 2
+        // empty_composer_visual_rows = cursor row + one hint row = 2
+        // top_padding = 3 - clamp(2, 1, 3) = 1
         // cursor_x = 0 + (1-0) + 0 = 1
-        // cursor_y = 0 + (1-0) + (2+0) = 3
-        assert_eq!(widget.cursor_pos(area), Some((1, 3)));
+        // cursor_y = 0 + (1-0) + (1+0) = 2
+        assert_eq!(
+            empty_composer_visual_rows(Some(COMPOSER_PLACEHOLDER), 38, 3),
+            2
+        );
+        assert_eq!(widget.cursor_pos(area), Some((1, 2)));
     }
 
     #[test]
-    fn empty_composer_cursor_accounts_for_placeholder_wrapping() {
+    fn empty_composer_cursor_accounts_for_wrapped_placeholder_hint() {
         let mut app = create_test_app();
         app.composer_density = ComposerDensity::Comfortable;
         let slash_menu_entries = Vec::<SlashMenuEntry>::new();
@@ -4049,11 +4170,48 @@ mod tests {
         // inner_area: {x:1, y:1, w:12, h:3}
         // input_rows_budget = 3
         // placeholder_visual_lines(12) = 2  ("Write a task" / " or use /.")
-        // top_padding = 3 - clamp(2, 1, 3) = 1
+        // empty_composer_visual_rows = cursor row + two hint rows = 3
+        // top_padding = 3 - clamp(3, 1, 3) = 0
         // cursor_x = 0 + (1-0) + 0 = 1
-        // cursor_y = 0 + (1-0) + (1+0) = 2
+        // cursor_y = 0 + (1-0) + (0+0) = 1
         assert_eq!(placeholder_visual_lines(12), 2);
-        assert_eq!(widget.cursor_pos(area), Some((1, 2)));
+        assert_eq!(
+            empty_composer_visual_rows(Some(COMPOSER_PLACEHOLDER), 12, 3),
+            3
+        );
+        assert_eq!(widget.cursor_pos(area), Some((1, 1)));
+    }
+
+    #[test]
+    fn empty_composer_keeps_cursor_row_clear_for_ime_preedit() {
+        let mut app = create_test_app();
+        app.composer_density = ComposerDensity::Comfortable;
+        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
+        let mention_menu_entries = Vec::<String>::new();
+        let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 5,
+        };
+        let mut buf = Buffer::empty(area);
+
+        widget.render(area, &mut buf);
+        let Some((cursor_x, cursor_y)) = widget.cursor_pos(area) else {
+            panic!("empty composer should expose cursor position");
+        };
+        let rendered = buffer_text(&buf, area);
+
+        assert_eq!(buf[(cursor_x, cursor_y)].symbol(), " ");
+        assert!(
+            rendered.contains(COMPOSER_PLACEHOLDER),
+            "placeholder hint should still render below the cursor row: {rendered}"
+        );
+        assert!(
+            !row_text(&buf, area, cursor_y).contains(COMPOSER_PLACEHOLDER),
+            "cursor row must remain clear for terminal IME preedit text: {rendered}"
+        );
     }
 
     #[test]
@@ -4125,7 +4283,7 @@ mod tests {
         assert!(!normal_rendered.contains("Draft"));
         assert!(
             !normal_rendered
-                .contains(normal_app.tr(crate::localization::MessageId::HistorySearchTitle))
+                .contains(&*normal_app.tr(crate::localization::MessageId::HistorySearchTitle))
         );
 
         let mut draft_app = create_test_app();
@@ -4146,7 +4304,7 @@ mod tests {
         search_widget.render(area, &mut search_buf);
         assert!(
             buffer_text(&search_buf, area)
-                .contains(search_app.tr(crate::localization::MessageId::HistorySearchTitle))
+                .contains(&*search_app.tr(crate::localization::MessageId::HistorySearchTitle))
         );
     }
 
@@ -4217,7 +4375,7 @@ mod tests {
             height: 3,
         };
 
-        assert_eq!(widget.cursor_pos(area), Some((0, 2)));
+        assert_eq!(widget.cursor_pos(area), Some((0, 1)));
     }
 
     #[test]
@@ -4799,6 +4957,228 @@ mod tests {
         assert!(rendered.contains("beta"), "{rendered}");
         assert!(rendered.contains("Dir"), "{rendered}");
         assert!(rendered.contains("/tmp/project"), "{rendered}");
+    }
+
+    #[test]
+    fn approval_card_renders_shell_ask_rule_save_preview() {
+        let request = crate::tui::approval::ApprovalRequest::new(
+            "approval-1",
+            "exec_shell",
+            "Run shell command",
+            &serde_json::json!({ "command": "cargo test --workspace" }),
+            "exec_shell:cargo-test",
+        );
+
+        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
+
+        assert!(rendered.contains("s approve + save ask rule"), "{rendered}");
+        assert!(rendered.contains("Save:"), "{rendered}");
+        assert!(rendered.contains("1 ask rule"), "{rendered}");
+        assert!(
+            rendered.contains("tool=exec_shell command=cargo test --workspace"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn approval_card_renders_file_ask_rule_save_previews() {
+        let cases = [
+            (
+                "write_file",
+                serde_json::json!({
+                    "path": "src/main.rs",
+                    "content": "fn main() {}\n",
+                }),
+                "tool=write_file path=src/main.rs",
+            ),
+            (
+                "edit_file",
+                serde_json::json!({
+                    "path": "/workspace/src/lib.rs",
+                    "old_string": "old",
+                    "new_string": "new",
+                }),
+                "tool=edit_file path=src/lib.rs",
+            ),
+        ];
+
+        for (tool_name, params, expected_rule) in cases {
+            let request = crate::tui::approval::ApprovalRequest::new(
+                "approval-1",
+                tool_name,
+                "Modify a file",
+                &params,
+                &format!("{tool_name}:src"),
+            );
+
+            let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
+
+            assert!(rendered.contains("Save:"), "{tool_name}:\n{rendered}");
+            assert!(rendered.contains("1 ask rule"), "{tool_name}:\n{rendered}");
+            assert!(
+                rendered.contains(expected_rule),
+                "{tool_name} should preview {expected_rule}:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn approval_card_renders_apply_patch_multi_rule_save_preview() {
+        let patch = "diff --git a/src/a.rs b/src/a.rs\n\
+--- a/src/a.rs\n\
++++ b/src/a.rs\n\
+@@ -1,1 +1,1 @@\n\
+-old\n\
++new\n\
+diff --git a/src/b.rs b/src/b.rs\n\
+--- a/src/b.rs\n\
++++ b/src/b.rs\n\
+@@ -1,1 +1,1 @@\n\
+-old\n\
++new\n";
+        let request = crate::tui::approval::ApprovalRequest::new(
+            "approval-1",
+            "apply_patch",
+            "Apply a patch",
+            &serde_json::json!({ "patch": patch }),
+            "apply_patch:multi",
+        );
+
+        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
+
+        assert!(rendered.contains("Save:"), "{rendered}");
+        assert!(rendered.contains("2 ask rules"), "{rendered}");
+        assert!(
+            rendered.contains("tool=apply_patch path=src/a.rs"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("tool=apply_patch path=src/b.rs"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn approval_card_truncates_apply_patch_ask_rule_save_preview() {
+        let request = crate::tui::approval::ApprovalRequest::new(
+            "approval-1",
+            "apply_patch",
+            "Apply a patch",
+            &serde_json::json!({
+                "changes": [
+                    { "path": "src/a.rs", "content": "a" },
+                    { "path": "src/b.rs", "content": "b" },
+                    { "path": "src/c.rs", "content": "c" },
+                    { "path": "src/d.rs", "content": "d" },
+                    { "path": "src/e.rs", "content": "e" }
+                ]
+            }),
+            "apply_patch:many",
+        );
+
+        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
+
+        assert!(rendered.contains("5 ask rules"), "{rendered}");
+        assert!(
+            rendered.contains("tool=apply_patch path=src/a.rs"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("... 1 more"), "{rendered}");
+        assert!(
+            !rendered.contains("tool=apply_patch path=src/e.rs"),
+            "truncated rule should not render directly:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn approval_card_omits_ask_rule_save_preview_when_rule_is_unavailable() {
+        let unsafe_path = crate::tui::approval::ApprovalRequest::new(
+            "approval-1",
+            "write_file",
+            "Write a file",
+            &serde_json::json!({
+                "path": "../escape.rs",
+                "content": "unsafe\n",
+            }),
+            "write_file:escape",
+        );
+        let preflight_failed = crate::tui::approval::ApprovalRequest::new(
+            "approval-2",
+            "apply_patch",
+            "Apply a patch",
+            &serde_json::json!({ "patch": "@@ -1 +1 @@\n-old\n+new\n" }),
+            "apply_patch:invalid",
+        );
+
+        for request in [unsafe_path, preflight_failed] {
+            let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
+
+            assert!(
+                !rendered.contains("s approve + save ask rule"),
+                "S shortcut should stay hidden:\n{rendered}"
+            );
+            assert!(
+                !rendered.contains("Save:"),
+                "save preview should stay hidden:\n{rendered}"
+            );
+            assert!(
+                !rendered.contains("ask rule"),
+                "ask-rule details should stay hidden:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn approval_file_write_modal_renders_proposed_change_preview() {
+        let request = crate::tui::approval::ApprovalRequest::new(
+            "approval-1",
+            "write_file",
+            "Write a file",
+            &serde_json::json!({
+                "path": "src/main.rs",
+                "content": "fn main() {\n    println!(\"visible before approval\");\n}\n",
+            }),
+            "write_file:src/main.rs",
+        );
+        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let widget = ApprovalWidget::new(&request, &view);
+        let area = Rect::new(0, 0, 120, 34);
+        let mut buf = Buffer::empty(area);
+
+        widget.render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+
+        assert!(rendered.contains("Preview:"), "{rendered}");
+        assert!(rendered.contains("+ fn main() {"), "{rendered}");
+        assert!(
+            rendered.contains("visible before approval"),
+            "approval modal should show proposed file content before approval:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn compact_apply_patch_approval_falls_back_to_params_when_preview_is_hidden() {
+        let request = crate::tui::approval::ApprovalRequest::new(
+            "approval-1",
+            "apply_patch",
+            "Apply a patch",
+            &serde_json::json!({
+                "patch": "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+            }),
+            "apply_patch:src/lib.rs",
+        );
+        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let widget = ApprovalWidget::new(&request, &view);
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+
+        widget.render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+
+        assert!(rendered.contains("Params:"), "{rendered}");
+        assert!(rendered.contains("patch"), "{rendered}");
+        assert!(rendered.contains("[y]"), "{rendered}");
+        assert!(rendered.contains("[d]"), "{rendered}");
     }
 
     #[test]

@@ -283,7 +283,7 @@ impl HistoryCell {
                 folded ^ !options.verbose,
                 options.low_motion,
             ),
-            HistoryCell::Tool(cell) if !options.show_tool_details => {
+            HistoryCell::Tool(cell) if !options.show_tool_details && !cell.is_failed() => {
                 let mut lines = cell.lines_with_motion(width, options.low_motion);
                 if lines.len() > 2 {
                     lines.truncate(2);
@@ -294,7 +294,7 @@ impl HistoryCell {
                 }
                 lines
             }
-            HistoryCell::Tool(cell) if options.calm_mode => {
+            HistoryCell::Tool(cell) if options.calm_mode && !cell.is_failed() => {
                 let mut lines = cell.lines_with_motion(width, options.low_motion);
                 if lines.len() > TOOL_CARD_SUMMARY_LINES {
                     lines.truncate(TOOL_CARD_SUMMARY_LINES);
@@ -1357,7 +1357,8 @@ impl GenericToolCell {
                 ));
             }
         } else {
-            let show_args = matches!(self.status, ToolStatus::Running) || self.output.is_none();
+            let show_args = matches!(self.status, ToolStatus::Running | ToolStatus::Failed)
+                || self.output.is_none();
             if show_args && let Some(summary) = self.input_summary.as_ref() {
                 lines.extend(render_compact_kv(
                     "args",
@@ -1381,11 +1382,17 @@ impl GenericToolCell {
                 ));
                 lines.extend(diff_render::render_diff(output, width));
             } else {
+                let output_mode =
+                    if matches!(mode, RenderMode::Live) && self.status == ToolStatus::Failed {
+                        RenderMode::Transcript
+                    } else {
+                        mode
+                    };
                 lines.extend(render_tool_output_mode(
                     output,
                     width,
                     TOOL_OUTPUT_LINE_LIMIT,
-                    mode,
+                    output_mode,
                 ));
             }
 

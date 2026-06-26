@@ -26,13 +26,9 @@ const UPDATE_HTTP_ATTEMPTS: usize = 3;
 const UPDATE_HTTP_RETRY_DELAY_MS: u64 = 100;
 
 /// Run the self-update workflow.
+///
+/// OpenHarmony (HarmonyOS) won't compile this file, so no need to handle
 pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Result<()> {
-    #[cfg(target_env = "ohos")]
-    {
-        let _ = (beta, check_only, proxy_arg);
-        bail!("self-update is not supported on HarmonyOS/OpenHarmony yet");
-    }
-
     let current_exe =
         std::env::current_exe().context("failed to determine current executable path")?;
     let legacy_binary = is_legacy_binary(&current_exe);
@@ -755,7 +751,17 @@ fn download_url_once(url: &str, proxy: Option<&Proxy>) -> Result<(reqwest::Statu
 fn sha256_hex(data: &[u8]) -> String {
     use sha2::Digest;
     let hash = sha2::Sha256::digest(data);
-    format!("{hash:x}")
+    hex_bytes(hash)
+}
+
+fn hex_bytes(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

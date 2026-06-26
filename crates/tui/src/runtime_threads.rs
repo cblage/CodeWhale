@@ -2084,7 +2084,7 @@ impl RuntimeThreadManager {
                 dynamic_tools: req.dynamic_tools,
                 hook_executor: None,
                 approval_mode: if auto_approve {
-                    crate::tui::approval::ApprovalMode::Auto
+                    crate::tui::approval::ApprovalMode::Bypass
                 } else {
                     crate::tui::approval::ApprovalMode::Suggest
                 },
@@ -2552,6 +2552,7 @@ impl RuntimeThreadManager {
                     system_prompt_override: thread.system_prompt.is_some(),
                     model: thread.model.clone(),
                     workspace: thread.workspace.clone(),
+                    mode: parse_mode(&thread.mode),
                 })
                 .await
                 .map_err(|e| anyhow!("Failed to sync thread session: {e}"))?;
@@ -3178,14 +3179,36 @@ impl RuntimeThreadManager {
                     };
 
                     if auto_approve || trust_mode {
-                        match Self::approval_decision(auto_approve, trust_mode, false) {
-                            RuntimeApprovalDecision::ApproveTool => {
-                                let _ = engine.approve_tool_call(id).await;
-                            }
+                        let auto_decision =
+                            Self::approval_decision(auto_approve, trust_mode, false);
+                        let (dec_str, approved) = match auto_decision {
+                            RuntimeApprovalDecision::ApproveTool => ("allow", true),
                             RuntimeApprovalDecision::DenyTool
-                            | RuntimeApprovalDecision::RetryWithFullAccess => {
-                                let _ = engine.deny_tool_call(id).await;
-                            }
+                            | RuntimeApprovalDecision::RetryWithFullAccess => ("deny", false),
+                        };
+                        // Emit approval.decided so external clients (GUI)
+                        // know the approval was resolved automatically and
+                        // can clear any pending approval UI.  Without this
+                        // event the GUI would show a frozen approval dialog
+                        // that never receives approval.decided.
+                        self.emit_event(
+                            &thread_id,
+                            Some(&turn_id),
+                            None,
+                            "approval.decided",
+                            json!({
+                                "approval_id": id,
+                                "decision": dec_str,
+                                "remember": false,
+                                "auto": true,
+                            }),
+                        )
+                        .await
+                        .ok();
+                        if approved {
+                            let _ = engine.approve_tool_call(id).await;
+                        } else {
+                            let _ = engine.deny_tool_call(id).await;
                         }
                         continue;
                     }
@@ -3751,14 +3774,15 @@ fn enforce_lru_capacity(
 
 /// Resolves only explicit mode tokens to an app mode. Free-form prompt text is
 /// never a valid mode token: `parse_mode_opt` returns `None` unless the input is
-/// exactly `agent`/`plan`/`yolo` or the numeric aliases `1`/`2`/`3`. Mode
+/// exactly `agent`/`plan`/`auto`/`yolo` or numeric aliases `1`/`2`/`3`/`4`. Mode
 /// changes originate from the Tab cycle, `/mode`, the mode picker, or
 /// config/startup defaults, not from submitted natural-language prompt text.
 fn parse_mode_opt(mode: &str) -> Option<AppMode> {
     match mode.trim().to_ascii_lowercase().as_str() {
         "agent" | "1" => Some(AppMode::Agent),
         "plan" | "2" => Some(AppMode::Plan),
-        "yolo" | "3" => Some(AppMode::Yolo),
+        "auto" | "3" => Some(AppMode::Auto),
+        "yolo" | "4" | "bypass" | "bypass-permissions" | "bypasspermissions" => Some(AppMode::Yolo),
         _ => None,
     }
 }

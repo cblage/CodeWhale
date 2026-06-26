@@ -21,6 +21,8 @@
 //! pairs (`↑/↓`) or families (`1-8`) that don't map cleanly to a single
 //! chord.
 
+use std::borrow::Cow;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeybindingSection {
     Navigation,
@@ -33,7 +35,7 @@ pub enum KeybindingSection {
 }
 
 impl KeybindingSection {
-    pub fn label(self, locale: crate::localization::Locale) -> &'static str {
+    pub fn label(self, locale: crate::localization::Locale) -> Cow<'static, str> {
         use crate::localization::{MessageId, tr};
         let id = match self {
             Self::Navigation => MessageId::HelpSectionNavigation,

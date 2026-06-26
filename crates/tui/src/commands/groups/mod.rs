@@ -9,6 +9,7 @@ pub mod config;
 pub mod core;
 pub mod debug;
 pub mod memory;
+pub mod plugins;
 pub mod project;
 pub mod session;
 pub mod skills;
@@ -25,6 +26,7 @@ pub fn all_command_groups() -> Vec<&'static dyn CommandGroup> {
         &project::ProjectCommands,
         &skills::SkillsCommands,
         &memory::MemoryCommands,
+        &plugins::PluginsCommands,
         &utility::UtilityCommands,
     ]
 }

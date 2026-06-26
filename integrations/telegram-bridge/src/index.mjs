@@ -21,9 +21,14 @@ import {
   stripGroupPrefix,
   threadListKeyboard,
   telegramIdentity,
-  telegramRetryDelayMs
+  telegramRetryDelayMs,
+  telegramSendRetryDelayMs
 } from "./lib.mjs";
 import { ThreadStore as CoreThreadStore } from "../../bridge-core/src/lib.mjs";
+
+const TYPING_INTERVAL_MS = 2000;
+const TYPING_TIMEOUT_MS = 1500;
+const LAST_SEQ_FLUSH_INTERVAL_MS = 2000;
 
 class ThreadStore extends CoreThreadStore {
   constructor(filePath) {
@@ -63,7 +68,10 @@ const config = {
 const threadStore = await ThreadStore.open(config.threadMapPath);
 const activeTurnTasks = new Map();
 let stopping = false;
-let updateOffset = Number(process.env.TELEGRAM_UPDATE_OFFSET || 0);
+let updateOffset = threadStore.getCursor(
+  "telegram.update_offset",
+  Number(process.env.TELEGRAM_UPDATE_OFFSET || 0)
+);
 
 function requestStop() {
   stopping = true;
@@ -111,10 +119,13 @@ async function pollTelegram() {
         allowed_updates: ["message", "callback_query"]
       });
       for (const update of updates || []) {
-        if (update.update_id != null) updateOffset = Math.max(updateOffset, update.update_id + 1);
-        await handleIncomingUpdate(update).catch((error) => {
+        try {
+          await handleIncomingUpdate(update);
+          await markUpdateHandled(update);
+        } catch (error) {
           console.error("failed to handle incoming Telegram update", error);
-        });
+          break;
+        }
       }
     } catch (error) {
       if (looksLikePollingConflict(error)) {
@@ -129,8 +140,18 @@ async function pollTelegram() {
   }
 }
 
+async function markUpdateHandled(update) {
+  if (update.update_id == null) return;
+  if (!Number.isFinite(Number(update.update_id))) return;
+  const nextOffset = Math.max(updateOffset, Number(update.update_id) + 1);
+  if (nextOffset === updateOffset) return;
+  updateOffset = nextOffset;
+  await threadStore.setCursor("telegram.update_offset", updateOffset);
+}
+
 async function handleIncomingUpdate(update) {
   if (update.callback_query) {
+    if (await isReplayCallbackUpdate(update)) return;
     await handleCallbackQuery(update.callback_query);
     return;
   }
@@ -169,6 +190,11 @@ async function handleIncomingUpdate(update) {
 
   const command = parseCommand(scoped.text);
   await handleCommand(identity.chatId, command);
+}
+
+async function isReplayCallbackUpdate(update) {
+  if (update.update_id == null) return false;
+  return threadStore.recordMessage(`callback:${update.update_id}`);
 }
 
 async function handleCommand(chatId, command) {
@@ -292,6 +318,7 @@ async function handleStoredAction(chatId, action, query = null) {
   }
 
   if (stored.kind === "resume") {
+    await threadStore.takeAction(action.token);
     await resumeThread(chatId, stored.threadId);
     return;
   }
@@ -463,7 +490,7 @@ async function runPrompt(chatId, prompt, options = {}) {
     lastSeq: sinceSeq,
     updatedAt: new Date().toISOString()
   });
-  await sendText(chatId, `Started turn ${turnId || "(unknown)"}`, {
+  await sendTurnText(chatId, `Started turn ${turnId || "(unknown)"}`, {
     replyMarkup: activeTurnKeyboard()
   });
 
@@ -498,7 +525,7 @@ async function reattachActiveTurns() {
       activeTurnId: turnId,
       updatedAt: new Date().toISOString()
     });
-    await sendText(
+    await sendTurnText(
       chatId,
       `Bridge restarted. Reattaching to active turn ${turnId} from seq ${sinceSeq}.`
     );
@@ -521,9 +548,38 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
   }
   let responseText = "";
   let latestSeq = sinceSeq;
+  let flushedSeq = sinceSeq;
+  let lastSeqFlushAt = 0;
   let sentProgressAt = Date.now();
+  let typingPaused = false;
+  let typingInFlight = false;
+
+  async function flushLastSeq(force = false) {
+    if (latestSeq <= flushedSeq) return;
+    if (!force && Date.now() - lastSeqFlushAt < LAST_SEQ_FLUSH_INTERVAL_MS) return;
+    await threadStore.patchChat(chatId, { lastSeq: latestSeq });
+    flushedSeq = latestSeq;
+    lastSeqFlushAt = Date.now();
+  }
+
+  const tickTyping = async () => {
+    if (stopping || typingPaused || typingInFlight) return;
+    typingInFlight = true;
+    try {
+      await sendTypingAction(chatId);
+    } catch (error) {
+      console.warn("failed to send Telegram typing action", error);
+    } finally {
+      typingInFlight = false;
+    }
+  };
+  const typingTimer = setInterval(() => {
+    void tickTyping();
+  }, TYPING_INTERVAL_MS);
+  typingTimer.unref?.();
 
   try {
+    void tickTyping();
     const response = await fetch(
       `${config.runtimeUrl}/v1/threads/${encodeURIComponent(threadId)}/events?since_seq=${sinceSeq}`,
       {
@@ -540,25 +596,37 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
       if (!event.data) continue;
       const record = JSON.parse(event.data);
       latestSeq = Math.max(latestSeq, Number(record.seq || 0));
-      await threadStore.patchChat(chatId, { lastSeq: latestSeq });
+      await flushLastSeq(false);
 
       if (turnId && record.turn_id && record.turn_id !== turnId) continue;
+      const lifecycleStatus =
+        record.event === "turn.lifecycle"
+          ? record.payload?.turn?.status || record.payload?.status
+          : null;
+      const stopTypingEvent =
+        record.event === "turn.completed" ||
+        ["failed", "canceled", "interrupted"].includes(lifecycleStatus);
+      if (typingPaused && record.event !== "approval.required" && !stopTypingEvent) {
+        typingPaused = false;
+        void tickTyping();
+      }
 
       if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
         responseText += record.payload.delta || "";
         const now = Date.now();
         if (responseText.length > config.maxReplyChars && now - sentProgressAt > 15000) {
-          await sendText(chatId, responseText.slice(0, config.maxReplyChars));
+          await sendTurnText(chatId, responseText.slice(0, config.maxReplyChars));
           responseText = responseText.slice(config.maxReplyChars);
           sentProgressAt = now;
         }
       }
 
       if (record.event === "approval.required") {
+        typingPaused = true;
         const approval = record.payload || {};
         const approvalId = approval.approval_id || approval.id;
         if (!approvalId) {
-          await sendText(
+          await sendTurnText(
             chatId,
             [
               "Approval required",
@@ -577,7 +645,7 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
           kind: "approval",
           approvalId
         });
-        await sendText(
+        await sendTurnText(
           chatId,
           [
             "Approval required",
@@ -595,15 +663,16 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
       }
 
       if (record.event === "turn.completed") {
+        typingPaused = true;
         const turn = record.payload?.turn || {};
         const status = turn.status || "completed";
         const error = turn.error ? `\n${turn.error}` : "";
         if (status !== "completed") {
-          await sendText(chatId, `Turn ${status}.${error}`.trim(), {
+          await sendTurnText(chatId, `Turn ${status}.${error}`.trim(), {
             replyMarkup: controlKeyboard()
           });
         } else {
-          await sendText(chatId, responseText.trim() || "Turn completed.", {
+          await sendTurnText(chatId, responseText.trim() || "Turn completed.", {
             replyMarkup: controlKeyboard()
           });
         }
@@ -611,9 +680,9 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
       }
 
       if (record.event === "turn.lifecycle") {
-        const status = record.payload?.turn?.status || record.payload?.status;
-        if (["failed", "canceled", "interrupted"].includes(status)) {
-          await sendText(chatId, `Turn ${status}.`, { replyMarkup: controlKeyboard() });
+        if (["failed", "canceled", "interrupted"].includes(lifecycleStatus)) {
+          typingPaused = true;
+          await sendTurnText(chatId, `Turn ${lifecycleStatus}.`, { replyMarkup: controlKeyboard() });
           return;
         }
       }
@@ -621,16 +690,18 @@ async function streamTurnEvents(chatId, threadId, turnId, sinceSeq, options = {}
   } catch (error) {
     if (error.name === "AbortError") {
       if (timedOut) {
-        await sendText(chatId, `Turn timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
+        await sendTurnText(chatId, `Turn timed out after ${Math.round(config.turnTimeoutMs / 1000)}s.`);
       } else if (!stopping) {
-        await sendText(chatId, "Turn stream aborted.");
+        await sendTurnText(chatId, "Turn stream aborted.");
       }
       return;
     }
     throw error;
   } finally {
+    clearInterval(typingTimer);
     clearTimeout(timeout);
     options.signal?.removeEventListener("abort", abortFromCaller);
+    await flushLastSeq(true);
   }
 }
 
@@ -789,6 +860,31 @@ async function sendText(chatId, text, options = {}) {
   }
 }
 
+async function sendTypingAction(chatId) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TYPING_TIMEOUT_MS);
+  try {
+    await telegramApi(
+      "sendChatAction",
+      {
+        chat_id: chatId,
+        action: "typing"
+      },
+      { signal: controller.signal }
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function sendTurnText(chatId, text, options = {}) {
+  try {
+    await sendText(chatId, text, options);
+  } catch (error) {
+    console.error("failed to send Telegram turn update", error);
+  }
+}
+
 async function answerCallback(callbackQueryId, text = "") {
   await telegramApi("answerCallbackQuery", {
     callback_query_id: callbackQueryId,
@@ -805,11 +901,27 @@ async function editMessageReplyMarkup(chatId, messageId, replyMarkup) {
   });
 }
 
-async function telegramApi(method, body = {}) {
+async function telegramApi(method, body = {}, options = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await telegramApiOnce(method, body, options);
+    } catch (error) {
+      const retryMs = method === "sendMessage" ? telegramSendRetryDelayMs(error, attempt) : null;
+      if (retryMs == null) throw error;
+      console.warn(
+        `Telegram ${method} failed: ${error.message}. Retrying in ${Math.round(retryMs / 1000)}s.`
+      );
+      await delay(retryMs);
+    }
+  }
+}
+
+async function telegramApiOnce(method, body = {}, options = {}) {
   const response = await fetch(`${config.apiBase}/bot${config.botToken}/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal: options.signal
   });
   const payload = await readJsonSafe(response);
   if (!response.ok || payload?.ok === false) {

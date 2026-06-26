@@ -51,7 +51,8 @@ fn permissions_toml_deserializes_typed_ask_rules() {
 }
 
 #[test]
-fn permissions_toml_rejects_typed_allow_deny_shape() {
+fn permissions_toml_rejects_unknown_decision_field() {
+    // `decision` is NOT a valid field — `deny_unknown_fields` still active.
     let err = toml::from_str::<PermissionsToml>(
         r#"
         [[rules]]
@@ -60,9 +61,184 @@ fn permissions_toml_rejects_typed_allow_deny_shape() {
         command = "cargo test"
         "#,
     )
-    .expect_err("permissions.toml should be ask-only in this slice");
+    .expect_err("permissions.toml should reject unknown 'decision' field");
 
     assert!(err.message().contains("unknown field"));
+}
+
+#[test]
+fn permissions_toml_deserializes_action_deny_and_allow() {
+    let permissions: PermissionsToml = toml::from_str(
+        r#"
+        [[rules]]
+        tool = "exec_shell"
+        command = "sed"
+        action = "deny"
+
+        [[rules]]
+        tool = "exec_shell"
+        command = "git status"
+        action = "allow"
+
+        [[rules]]
+        tool = "exec_shell"
+        command = "cargo test"
+        "#,
+    )
+    .expect("permissions toml with actions");
+
+    assert_eq!(permissions.rules.len(), 3);
+    assert_eq!(
+        permissions.rules[0].action,
+        codewhale_execpolicy::PermissionAction::Deny
+    );
+    assert_eq!(
+        permissions.rules[1].action,
+        codewhale_execpolicy::PermissionAction::Allow
+    );
+    assert_eq!(
+        permissions.rules[2].action,
+        codewhale_execpolicy::PermissionAction::Ask
+    ); // default
+}
+
+#[test]
+fn permissions_ruleset_populates_denied_and_trusted_prefixes() {
+    let permissions: PermissionsToml = toml::from_str(
+        r#"
+        [[rules]]
+        tool = "exec_shell"
+        command = "sed"
+        action = "deny"
+
+        [[rules]]
+        tool = "exec_shell"
+        command = "awk"
+        action = "deny"
+
+        [[rules]]
+        tool = "exec_shell"
+        command = "git status"
+        action = "allow"
+
+        [[rules]]
+        tool = "exec_shell"
+        command = "cargo test"
+        action = "ask"
+        "#,
+    )
+    .unwrap();
+
+    let ruleset = permissions.ruleset();
+
+    // All four rules kept as ask_rules for path-based / tool-only matching
+    assert_eq!(ruleset.ask_rules.len(), 4);
+    // deny rules promoted to denied_prefixes
+    assert!(ruleset.denied_prefixes.contains(&"sed".to_string()));
+    assert!(ruleset.denied_prefixes.contains(&"awk".to_string()));
+    // allow rule promoted to trusted_prefixes
+    assert!(ruleset.trusted_prefixes.contains(&"git status".to_string()));
+    // ask rule NOT in trusted/denied prefixes
+    assert!(!ruleset.trusted_prefixes.contains(&"cargo test".to_string()));
+    assert!(!ruleset.denied_prefixes.contains(&"cargo test".to_string()));
+}
+
+#[test]
+fn permissions_ruleset_deny_without_command_stays_in_ask_rules() {
+    // Tool-only deny (no command) can't be promoted to denied_prefixes.
+    let permissions: PermissionsToml = toml::from_str(
+        r#"
+        [[rules]]
+        tool = "exec_shell"
+        action = "deny"
+        "#,
+    )
+    .unwrap();
+
+    let ruleset = permissions.ruleset();
+    assert_eq!(ruleset.ask_rules.len(), 1);
+    assert_eq!(
+        ruleset.ask_rules[0].action,
+        codewhale_execpolicy::PermissionAction::Deny
+    );
+    // No command → nothing to promote to denied_prefixes
+    assert!(ruleset.denied_prefixes.is_empty());
+}
+
+#[test]
+fn permissions_ruleset_empty_rules_produces_empty_ruleset() {
+    let permissions = PermissionsToml::default();
+    let ruleset = permissions.ruleset();
+    assert!(ruleset.trusted_prefixes.is_empty());
+    assert!(ruleset.denied_prefixes.is_empty());
+    assert!(ruleset.ask_rules.is_empty());
+}
+
+#[test]
+fn permissions_ruleset_mixed_actions_all_coexist() {
+    let permissions: PermissionsToml = toml::from_str(
+        r#"
+        [[rules]]
+        tool = "exec_shell"
+        command = "rm -rf"
+        action = "deny"
+
+        [[rules]]
+        tool = "exec_shell"
+        command = "git status"
+        action = "allow"
+
+        [[rules]]
+        tool = "exec_shell"
+        command = "npm test"
+        action = "ask"
+
+        [[rules]]
+        tool = "read_file"
+        path = "Cargo.toml"
+        action = "allow"
+
+        [[rules]]
+        tool = "write_file"
+        path = "src/secrets.rs"
+        action = "deny"
+        "#,
+    )
+    .unwrap();
+
+    let ruleset = permissions.ruleset();
+
+    // All 5 rules in ask_rules
+    assert_eq!(ruleset.ask_rules.len(), 5);
+
+    // Command-based deny → denied_prefixes
+    assert!(ruleset.denied_prefixes.contains(&"rm -rf".to_string()));
+    assert_eq!(ruleset.denied_prefixes.len(), 1); // only rm -rf has a command
+
+    // Command-based allow → trusted_prefixes
+    assert!(ruleset.trusted_prefixes.contains(&"git status".to_string()));
+    assert_eq!(ruleset.trusted_prefixes.len(), 1); // only git status has a command
+
+    // Path-based rules stay in ask_rules but not in prefixes
+    let path_deny = ruleset
+        .ask_rules
+        .iter()
+        .find(|r| r.path.as_deref() == Some("src/secrets.rs"))
+        .unwrap();
+    assert_eq!(
+        path_deny.action,
+        codewhale_execpolicy::PermissionAction::Deny
+    );
+
+    let path_allow = ruleset
+        .ask_rules
+        .iter()
+        .find(|r| r.path.as_deref() == Some("Cargo.toml"))
+        .unwrap();
+    assert_eq!(
+        path_allow.action,
+        codewhale_execpolicy::PermissionAction::Allow
+    );
 }
 
 #[test]

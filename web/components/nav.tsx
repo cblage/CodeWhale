@@ -4,14 +4,14 @@ import { Seal } from "./seal";
 import { Whale } from "./whale";
 import { LocaleSwitcher } from "./locale-switcher";
 import { MobileMenu } from "./mobile-menu";
+import { NavLinks } from "./nav-links";
 
 const EN_LINKS = [
   { href: "/en/install", label: "Install", cn: "安装" },
   { href: "/en/runtime", label: "Runtime", cn: "集成" },
   { href: "/en/docs", label: "Docs", cn: "文档" },
   { href: "/en/feed", label: "Activity", cn: "动态" },
-  /* ADDED NEW DIGEST ARCHIVE LINK HERE */
-  { href: "/en/digest", label: "Digest", cn: "摘要" },
+  { href: "/en/digest", label: "Community Digest", cn: "社区摘要" },
   { href: "/en/roadmap", label: "Roadmap", cn: "路线" },
   { href: "/en/faq", label: "FAQ", cn: "问答" },
   { href: "/en/contribute", label: "Contribute", cn: "参与" },
@@ -22,8 +22,7 @@ const ZH_LINKS = [
   { href: "/zh/runtime", label: "集成", cn: "" },
   { href: "/zh/docs", label: "文档", cn: "" },
   { href: "/zh/feed", label: "动态", cn: "" },
-  /* ADDED NEW ZH DIGEST ARCHIVE LINK HERE */
-  { href: "/zh/digest", label: "每周摘要", cn: "" },
+  { href: "/zh/digest", label: "社区摘要", cn: "" },
   { href: "/zh/roadmap", label: "路线图", cn: "" },
   { href: "/zh/faq", label: "常见问题", cn: "" },
   { href: "/zh/contribute", label: "参与贡献", cn: "" },
@@ -64,16 +63,7 @@ export function Nav({ locale = "en" }: { locale?: Locale }) {
           </div>
         </Link>
 
-        <nav className="hidden md:flex items-center gap-7">
-          {links.map((l) => (
-            <Link key={l.href} href={l.href} className="nav-link group">
-              <span>{l.label}</span>
-              {!isZh && "cn" in l && l.cn && (
-                <span className="font-cjk text-[0.66rem] ml-1.5 text-ink-mute">{l.cn}</span>
-              )}
-            </Link>
-          ))}
-        </nav>
+        <NavLinks links={links} isZh={isZh} />
 
         <div className="flex items-center gap-2 sm:gap-3">
           <LocaleSwitcher current={locale} />

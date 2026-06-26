@@ -13,11 +13,11 @@ use std::process::Command;
 use crate::project_context;
 use crate::tui::app::{App, AppAction};
 
-use super::CommandResult;
+use crate::commands::CommandResult;
 
 /// Generate an AGENTS.md file for the current project by gathering context and
 /// delegating content generation to the LLM agent.
-pub fn init(app: &mut App) -> CommandResult {
+fn init(app: &mut App) -> CommandResult {
     let workspace = &app.workspace;
 
     // Ensure .deepseek/ is gitignored if we're inside a git repo.
@@ -792,6 +792,29 @@ fn build_init_prompt(
     );
 
     prompt
+}
+
+pub(in crate::commands) const COMMAND_INFO: crate::commands::traits::CommandInfo =
+    crate::commands::traits::CommandInfo {
+        name: "init",
+        aliases: &[],
+        usage: "/init",
+        description_id: crate::localization::MessageId::CmdInitDescription,
+    };
+
+pub(in crate::commands) struct InitCmd;
+
+impl crate::commands::traits::RegisterCommand for InitCmd {
+    fn info() -> &'static crate::commands::traits::CommandInfo {
+        &COMMAND_INFO
+    }
+
+    fn execute(
+        app: &mut crate::tui::app::App,
+        _arg: Option<&str>,
+    ) -> crate::commands::CommandResult {
+        init(app)
+    }
 }
 
 // ---------------------------------------------------------------------------

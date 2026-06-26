@@ -39,8 +39,10 @@ use std::time::{Duration, Instant};
 /// Determines when tool executions require user approval
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ApprovalMode {
-    /// Auto-approve all tools (YOLO mode / --yolo flag)
+    /// Automatically review risky tool calls before deciding whether to ask.
     Auto,
+    /// Bypass approvals entirely (YOLO mode / --yolo flag).
+    Bypass,
     /// Suggest approval for non-safe tools (non-YOLO modes)
     #[default]
     Suggest,
@@ -52,6 +54,7 @@ impl ApprovalMode {
     pub fn label(self) -> &'static str {
         match self {
             ApprovalMode::Auto => "AUTO",
+            ApprovalMode::Bypass => "BYPASS",
             ApprovalMode::Suggest => "SUGGEST",
             ApprovalMode::Never => "NEVER",
         }
@@ -60,6 +63,8 @@ impl ApprovalMode {
     pub fn from_config_value(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "auto" => Some(ApprovalMode::Auto),
+            "bypass" | "yolo" | "dontask" | "dont_ask" | "bypass-permissions"
+            | "bypasspermissions" => Some(ApprovalMode::Bypass),
             "suggest" | "suggested" | "on-request" | "untrusted" => Some(ApprovalMode::Suggest),
             "never" | "deny" | "denied" => Some(ApprovalMode::Never),
             _ => None,
@@ -153,6 +158,30 @@ pub struct ApprovalDetail {
     pub shell_lines: Option<Vec<String>>,
 }
 
+/// Human-readable preview of ask-only rules the `S` approval shortcut would
+/// append. This is intentionally derived from `persistent_ask_rules` only; the
+/// approval UI must not re-parse tool inputs such as patches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskRuleSavePreview {
+    pub rule_count: usize,
+    pub entries: Vec<String>,
+    pub omitted: usize,
+}
+
+impl AskRuleSavePreview {
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let noun = if self.rule_count == 1 {
+            "rule"
+        } else {
+            "rules"
+        };
+        format!("{} ask {noun}", self.rule_count)
+    }
+}
+
+const ASK_RULE_SAVE_PREVIEW_MAX_ENTRIES: usize = 4;
+
 impl ApprovalRequest {
     #[cfg(test)]
     pub fn new(
@@ -240,6 +269,14 @@ impl ApprovalRequest {
     }
 
     #[must_use]
+    pub fn ask_rule_save_preview(&self) -> Option<AskRuleSavePreview> {
+        build_ask_rule_save_preview(
+            &self.persistent_ask_rules,
+            ASK_RULE_SAVE_PREVIEW_MAX_ENTRIES,
+        )
+    }
+
+    #[must_use]
     #[cfg(test)]
     pub fn ask_rule_preview(&self) -> Option<String> {
         if self.persistent_ask_rules.is_empty() {
@@ -254,14 +291,72 @@ impl ApprovalRequest {
     /// Extract the most important params for the approval card.
     #[must_use]
     pub fn prominent_detail_items(&self, locale: Locale) -> Vec<ApprovalDetail> {
-        build_prominent_details(self.category, &self.params)
+        build_prominent_details(&self.tool_name, self.category, &self.params)
             .into_iter()
             .map(|mut detail| {
+                let is_preview = detail.label == "Preview";
                 detail.label = localize_detail_label(&detail.label, locale).to_string();
+                if is_preview {
+                    if let Some(lines) = detail.shell_lines.as_mut() {
+                        for line in lines.iter_mut() {
+                            *line = localize_preview_shell_line(&self.tool_name, line, locale)
+                                .to_string();
+                        }
+                        detail.value = lines.join("\n");
+                    }
+                }
                 detail
             })
             .collect()
     }
+}
+
+#[must_use]
+fn build_ask_rule_save_preview(
+    rules: &[ToolAskRule],
+    max_entries: usize,
+) -> Option<AskRuleSavePreview> {
+    if rules.is_empty() {
+        return None;
+    }
+
+    let entries = rules
+        .iter()
+        .take(max_entries)
+        .map(format_ask_rule_save_entry)
+        .collect();
+    Some(AskRuleSavePreview {
+        rule_count: rules.len(),
+        entries,
+        omitted: rules.len().saturating_sub(max_entries),
+    })
+}
+
+#[must_use]
+fn format_ask_rule_save_entry(rule: &ToolAskRule) -> String {
+    let mut parts = vec![format!(
+        "tool={}",
+        sanitize_ask_rule_preview_value(&rule.tool)
+    )];
+    if let Some(command) = &rule.command {
+        parts.push(format!(
+            "command={}",
+            sanitize_ask_rule_preview_value(command)
+        ));
+    }
+    if let Some(path) = &rule.path {
+        parts.push(format!("path={}", sanitize_ask_rule_preview_value(path)));
+    }
+    parts.join(" ")
+}
+
+#[must_use]
+fn sanitize_ask_rule_preview_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
 }
 
 #[must_use]
@@ -276,6 +371,7 @@ fn build_persistent_ask_rules(
         // edit/write of the same file is matched. read_file stays out: this
         // boundary is about persisting *write* approvals only.
         "write_file" | "edit_file" => build_file_write_ask_rules(tool_name, params, workspace),
+        "apply_patch" => build_apply_patch_ask_rules(params, workspace),
         _ => Vec::new(),
     }
 }
@@ -320,6 +416,30 @@ fn build_file_write_ask_rules(
         return Vec::new();
     };
     vec![ToolAskRule::file_path(tool_name, relative)]
+}
+
+#[must_use]
+fn build_apply_patch_ask_rules(params: &Value, workspace: &Path) -> Vec<ToolAskRule> {
+    let Ok(preflight) = crate::tools::apply_patch::preflight_apply_patch(params) else {
+        return Vec::new();
+    };
+    let workspace = workspace.to_string_lossy();
+    let mut rules = Vec::new();
+
+    for path in preflight.touched_files {
+        let Some(relative) =
+            codewhale_execpolicy::normalize_workspace_relative_path(&path, workspace.as_ref())
+                .filter(|relative| !relative.is_empty())
+        else {
+            return Vec::new();
+        };
+        let rule = ToolAskRule::file_path("apply_patch", relative);
+        if !rules.contains(&rule) {
+            rules.push(rule);
+        }
+    }
+
+    rules
 }
 
 /// Get the category for a tool by name
@@ -580,7 +700,11 @@ fn build_impact_summary_zh_hans(
     }
 }
 
-fn build_prominent_details(category: ToolCategory, params: &Value) -> Vec<ApprovalDetail> {
+fn build_prominent_details(
+    tool_name: &str,
+    category: ToolCategory,
+    params: &Value,
+) -> Vec<ApprovalDetail> {
     let mut details = Vec::new();
     match category {
         ToolCategory::Shell => {
@@ -605,6 +729,13 @@ fn build_prominent_details(category: ToolCategory, params: &Value) -> Vec<Approv
                     label: "File".to_string(),
                     value: path,
                     shell_lines: None,
+                });
+            }
+            if let Some(preview_lines) = file_write_preview_lines(tool_name, params) {
+                details.push(ApprovalDetail {
+                    label: "Preview".to_string(),
+                    value: preview_lines.join("\n"),
+                    shell_lines: Some(preview_lines),
                 });
             }
         }
@@ -645,6 +776,165 @@ fn build_prominent_details(category: ToolCategory, params: &Value) -> Vec<Approv
     details
 }
 
+fn file_write_preview_lines(tool_name: &str, params: &Value) -> Option<Vec<String>> {
+    match tool_name {
+        "write_file" => {
+            let content = param_text(params, &["content"])?;
+            Some(prefixed_preview_lines(
+                "proposed content",
+                "+ ",
+                &content,
+                5,
+            ))
+        }
+        "edit_file" => {
+            let search = param_text(params, &["search"])?;
+            let replace = param_text(params, &["replace"])?;
+            let mut lines = Vec::new();
+            lines.extend(prefixed_preview_lines("replace this", "- ", &search, 3));
+            lines.extend(prefixed_preview_lines("with this", "+ ", &replace, 3));
+            Some(lines)
+        }
+        "apply_patch" => params
+            .get("patch")
+            .and_then(Value::as_str)
+            .and_then(apply_patch_preview_lines)
+            .or_else(|| {
+                params
+                    .get("changes")
+                    .and_then(Value::as_array)
+                    .and_then(|changes| changes_preview_lines(changes))
+            }),
+        _ => None,
+    }
+    .filter(|lines| !lines.is_empty())
+}
+
+fn prefixed_preview_lines(
+    header: &str,
+    prefix: &str,
+    content: &str,
+    max_lines: usize,
+) -> Vec<String> {
+    let mut lines = vec![header.to_string()];
+    if content.is_empty() {
+        lines.push(format!("{prefix}<empty>"));
+        return lines;
+    }
+
+    let total = content.lines().count();
+    for line in content.lines().take(max_lines) {
+        lines.push(format!("{prefix}{line}"));
+    }
+    if total > max_lines {
+        lines.push(format!("... (+{} more lines)", total - max_lines));
+    }
+    lines
+}
+
+fn push_preview_line(lines: &mut Vec<String>, line: impl Into<String>, limit: usize) -> bool {
+    if lines.len() >= limit {
+        return false;
+    }
+    lines.push(line.into());
+    true
+}
+
+fn append_preview_truncation(lines: &mut Vec<String>, line: String, limit: usize) {
+    if push_preview_line(lines, line.clone(), limit) {
+        return;
+    }
+    if let Some(last) = lines.last_mut() {
+        *last = line;
+    }
+}
+
+fn apply_patch_preview_lines(patch: &str) -> Option<Vec<String>> {
+    const PREVIEW_LIMIT: usize = 7;
+
+    let mut lines = Vec::new();
+    let mut omitted = 0usize;
+    for line in patch.lines().filter(|line| !line.trim().is_empty()) {
+        let is_diff_header = line.starts_with("diff --git ")
+            || line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("@@");
+        let is_change_line = (line.starts_with('+') && !line.starts_with("+++"))
+            || (line.starts_with('-') && !line.starts_with("---"));
+        if is_diff_header || is_change_line {
+            if !push_preview_line(&mut lines, line, PREVIEW_LIMIT) {
+                omitted += 1;
+            }
+        } else {
+            omitted += 1;
+        }
+    }
+
+    if lines.is_empty() {
+        omitted = 0;
+        for line in patch.lines().filter(|line| !line.trim().is_empty()) {
+            if !push_preview_line(&mut lines, line, PREVIEW_LIMIT) {
+                omitted += 1;
+            }
+        }
+    }
+
+    if omitted > 0 {
+        if lines.len() >= PREVIEW_LIMIT {
+            omitted += 1;
+        }
+        append_preview_truncation(
+            &mut lines,
+            format!("... (+{omitted} more patch lines)"),
+            PREVIEW_LIMIT,
+        );
+    }
+    if lines.is_empty() { None } else { Some(lines) }
+}
+
+fn changes_preview_lines(changes: &[Value]) -> Option<Vec<String>> {
+    const PREVIEW_LIMIT: usize = 7;
+
+    let mut lines = Vec::new();
+    let mut rendered_changes = 0usize;
+    for (idx, change) in changes.iter().enumerate() {
+        let path = change
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("<file>");
+        let content = change.get("content").and_then(Value::as_str).unwrap_or("");
+        if idx > 0 {
+            if !push_preview_line(&mut lines, String::new(), PREVIEW_LIMIT) {
+                break;
+            }
+        }
+        if !push_preview_line(&mut lines, format!("file: {path}"), PREVIEW_LIMIT) {
+            break;
+        }
+        rendered_changes += 1;
+        for line in prefixed_preview_lines("replacement content", "+ ", content, PREVIEW_LIMIT)
+            .into_iter()
+            .skip(1)
+        {
+            if !push_preview_line(&mut lines, line, PREVIEW_LIMIT) {
+                break;
+            }
+        }
+        if lines.len() >= PREVIEW_LIMIT {
+            break;
+        }
+    }
+    let skipped_changes = changes.len().saturating_sub(rendered_changes);
+    if skipped_changes > 0 {
+        append_preview_truncation(
+            &mut lines,
+            format!("... (+{skipped_changes} more files)"),
+            PREVIEW_LIMIT,
+        );
+    }
+    if lines.is_empty() { None } else { Some(lines) }
+}
+
 fn param_text(params: &Value, keys: &[&str]) -> Option<String> {
     let Value::Object(map) = params else {
         return None;
@@ -671,12 +961,27 @@ fn localize_detail_label(label: &str, locale: Locale) -> &str {
             "Command" => "命令",
             "Dir" => "目录",
             "File" => "文件",
+            "Preview" => "预览",
+            "proposed content" => "拟写入内容",
+            "replace this" => "替换此内容",
+            "with this" => "替换为",
+            "replacement content" => "替换内容",
             "Path" => "路径",
             "Target" => "目标",
             "Input" => "输入",
             _ => label,
         },
         _ => label,
+    }
+}
+
+fn localize_preview_shell_line<'a>(tool_name: &str, line: &'a str, locale: Locale) -> &'a str {
+    match tool_name {
+        "write_file" if line == "proposed content" => localize_detail_label(line, locale),
+        "edit_file" if matches!(line, "replace this" | "with this") => {
+            localize_detail_label(line, locale)
+        }
+        _ => line,
     }
 }
 
@@ -1636,6 +1941,245 @@ mod tests {
         assert_eq!(details[0].label, "File");
         assert_eq!(details[0].value, "src/main.rs");
         assert!(details[0].shell_lines.is_none());
+        assert_eq!(details[1].label, "Preview");
+        let preview = details[1].shell_lines.as_ref().expect("preview lines");
+        assert!(preview.iter().any(|line| line == "+ fn main() {}"));
+    }
+
+    #[test]
+    fn prominent_details_edit_file_includes_search_replace_preview() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "edit_file",
+            "Edit a file on disk",
+            &json!({
+                "path": "src/lib.rs",
+                "search": "old_call();",
+                "replace": "new_call();"
+            }),
+            "tool:edit_file",
+        );
+
+        let details = request.prominent_detail_items(Locale::En);
+        let preview = details
+            .iter()
+            .find(|detail| detail.label == "Preview")
+            .and_then(|detail| detail.shell_lines.as_ref())
+            .expect("edit preview");
+
+        assert!(preview.iter().any(|line| line == "- old_call();"));
+        assert!(preview.iter().any(|line| line == "+ new_call();"));
+    }
+
+    #[test]
+    fn prominent_details_apply_patch_includes_diff_preview() {
+        let patch = r#"diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,2 @@
+-old
++new
+"#;
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({"patch": patch}),
+            "tool:apply_patch",
+        );
+
+        let details = request.prominent_detail_items(Locale::En);
+        let preview = details
+            .iter()
+            .find(|detail| detail.label == "Preview")
+            .and_then(|detail| detail.shell_lines.as_ref())
+            .expect("patch preview");
+
+        assert!(preview.iter().any(|line| line.starts_with("@@")));
+        assert!(preview.iter().any(|line| line == "-old"));
+        assert!(preview.iter().any(|line| line == "+new"));
+    }
+
+    #[test]
+    fn prominent_details_apply_patch_changes_array_preview_stays_bounded() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({
+                "changes": [
+                    {
+                        "path": "src/lib.rs",
+                        "content": "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight"
+                    },
+                    {
+                        "path": "src/main.rs",
+                        "content": "main"
+                    },
+                    {
+                        "path": "src/extra.rs",
+                        "content": "extra"
+                    }
+                ]
+            }),
+            "tool:apply_patch",
+        );
+
+        let details = request.prominent_detail_items(Locale::En);
+        let preview = details
+            .iter()
+            .find(|detail| detail.label == "Preview")
+            .and_then(|detail| detail.shell_lines.as_ref())
+            .expect("changes preview");
+
+        assert!(
+            preview.len() <= 7,
+            "preview should stay bounded: {preview:?}"
+        );
+        assert!(preview.iter().any(|line| line == "file: src/lib.rs"));
+        assert_eq!(
+            preview.last().map(String::as_str),
+            Some("... (+2 more files)")
+        );
+    }
+
+    #[test]
+    fn apply_patch_changes_array_preview_reports_second_file_when_first_fills_buffer() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({
+                "changes": [
+                    {
+                        "path": "src/lib.rs",
+                        "content": "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight"
+                    },
+                    {
+                        "path": "src/main.rs",
+                        "content": "main"
+                    }
+                ]
+            }),
+            "tool:apply_patch",
+        );
+
+        let details = request.prominent_detail_items(Locale::En);
+        let preview = details
+            .iter()
+            .find(|detail| detail.label == "Preview")
+            .and_then(|detail| detail.shell_lines.as_ref())
+            .expect("changes preview");
+
+        assert!(
+            preview.len() <= 7,
+            "preview should stay bounded: {preview:?}"
+        );
+        assert!(preview.iter().any(|line| line == "file: src/lib.rs"));
+        assert_eq!(
+            preview.last().map(String::as_str),
+            Some("... (+1 more files)")
+        );
+    }
+
+    #[test]
+    fn apply_patch_preview_counts_omitted_context_lines() {
+        let patch = r#"diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,8 +1,8 @@
+ context one
+ context two
+-old
++new
+ context three
+ context four
+ context five
+"#;
+
+        let preview = apply_patch_preview_lines(patch).expect("patch preview");
+
+        assert!(
+            preview.len() <= 7,
+            "preview should stay bounded: {preview:?}"
+        );
+        assert_eq!(
+            preview.last().map(String::as_str),
+            Some("... (+5 more patch lines)")
+        );
+    }
+
+    #[test]
+    fn apply_patch_preview_counts_replaced_visible_line_as_omitted() {
+        let patch = r#"diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,4 @@
+-old1
++new1
+-old2
++new2
+ context one
+ context two
+"#;
+
+        let preview = apply_patch_preview_lines(patch).expect("patch preview");
+
+        assert_eq!(preview.len(), 7);
+        assert_eq!(
+            preview.last().map(String::as_str),
+            Some("... (+4 more patch lines)")
+        );
+    }
+
+    #[test]
+    fn preview_sublabels_are_localized_for_zh_hans() {
+        let write = ApprovalRequest::new(
+            "test-id",
+            "write_file",
+            "Write a file",
+            &json!({"path": "src/lib.rs", "content": "proposed content\nreplacement content"}),
+            "tool:write_file",
+        );
+        let write_preview = write
+            .prominent_detail_items(Locale::ZhHans)
+            .into_iter()
+            .find(|detail| detail.label == "预览")
+            .and_then(|detail| detail.shell_lines)
+            .expect("localized write preview");
+        assert!(write_preview.iter().any(|line| line == "拟写入内容"));
+        assert!(
+            write_preview
+                .iter()
+                .any(|line| line == "+ proposed content")
+        );
+        assert!(
+            write_preview
+                .iter()
+                .any(|line| line == "+ replacement content")
+        );
+
+        let edit = ApprovalRequest::new(
+            "test-id",
+            "edit_file",
+            "Edit a file",
+            &json!({
+                "path": "src/lib.rs",
+                "search": "with this",
+                "replace": "replace this"
+            }),
+            "tool:edit_file",
+        );
+        let edit_preview = edit
+            .prominent_detail_items(Locale::ZhHans)
+            .into_iter()
+            .find(|detail| detail.label == "预览")
+            .and_then(|detail| detail.shell_lines)
+            .expect("localized edit preview");
+        assert!(edit_preview.iter().any(|line| line == "替换此内容"));
+        assert!(edit_preview.iter().any(|line| line == "替换为"));
+        assert!(edit_preview.iter().any(|line| line == "- with this"));
+        assert!(edit_preview.iter().any(|line| line == "+ replace this"));
     }
 
     #[test]
@@ -1682,6 +2226,20 @@ mod tests {
     }
 
     #[test]
+    fn ask_rule_save_preview_formats_shell_rule() {
+        let request = shell_request();
+
+        let preview = request.ask_rule_save_preview().expect("save preview");
+        assert_eq!(preview.rule_count, 1);
+        assert_eq!(preview.summary(), "1 ask rule");
+        assert_eq!(
+            preview.entries,
+            vec!["tool=exec_shell command=cargo test --workspace"]
+        );
+        assert_eq!(preview.omitted, 0);
+    }
+
+    #[test]
     fn file_ask_rule_saved_for_write_file_approval() {
         // A write_file approval offers an exact, workspace-relative file rule
         // plus a preview so `S` can persist it.
@@ -1696,6 +2254,32 @@ mod tests {
         assert!(preview.contains("[[rules]]"));
         assert!(preview.contains("tool = \"write_file\""));
         assert!(preview.contains("path = \"src/main.rs\""));
+    }
+
+    #[test]
+    fn ask_rule_save_preview_formats_write_and_edit_file_paths() {
+        let write = destructive_request();
+        let edit = ApprovalRequest::new(
+            "test-id",
+            "edit_file",
+            "Edit a file on disk",
+            &json!({"path": "/workspace/src/lib.rs"}),
+            "tool:edit_file",
+        );
+
+        assert_eq!(
+            write
+                .ask_rule_save_preview()
+                .expect("write save preview")
+                .entries,
+            vec!["tool=write_file path=src/main.rs"]
+        );
+        assert_eq!(
+            edit.ask_rule_save_preview()
+                .expect("edit save preview")
+                .entries,
+            vec!["tool=edit_file path=src/lib.rs"]
+        );
     }
 
     #[test]
@@ -1725,6 +2309,7 @@ mod tests {
         assert!(request.persistent_ask_rules.is_empty());
         assert!(!request.can_save_ask_rule());
         assert_eq!(request.ask_rule_preview(), None);
+        assert_eq!(request.ask_rule_save_preview(), None);
     }
 
     #[test]
@@ -1745,7 +2330,177 @@ mod tests {
             );
             assert!(!request.can_save_ask_rule());
             assert_eq!(request.ask_rule_preview(), None);
+            assert_eq!(request.ask_rule_save_preview(), None);
         }
+    }
+
+    #[test]
+    fn apply_patch_ask_rules_saved_for_multi_file_patch() {
+        let patch = r"diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,1 +1,1 @@
+-old
++new
+diff --git a/src/b.rs b/src/b.rs
+--- a/src/b.rs
++++ b/src/b.rs
+@@ -1,1 +1,1 @@
+-old
++new
+";
+
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({"patch": patch}),
+            "tool:apply_patch",
+        );
+
+        assert_eq!(
+            request.persistent_ask_rules,
+            vec![
+                ToolAskRule::file_path("apply_patch", "src/a.rs"),
+                ToolAskRule::file_path("apply_patch", "src/b.rs"),
+            ]
+        );
+        assert!(request.can_save_ask_rule());
+        let preview = request.ask_rule_save_preview().expect("save preview");
+        assert_eq!(preview.summary(), "2 ask rules");
+        assert_eq!(
+            preview.entries,
+            vec![
+                "tool=apply_patch path=src/a.rs",
+                "tool=apply_patch path=src/b.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_patch_ask_rules_dedupe_targets_after_normalization() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({
+                "changes": [
+                    { "path": "src/a.rs", "content": "one" },
+                    { "path": "/workspace/src/a.rs", "content": "two" }
+                ]
+            }),
+            "tool:apply_patch",
+        );
+
+        assert_eq!(
+            request.persistent_ask_rules,
+            vec![ToolAskRule::file_path("apply_patch", "src/a.rs")]
+        );
+    }
+
+    #[test]
+    fn apply_patch_ask_rule_handles_timestamp_headers() {
+        let patch = "diff --git a/src/lib.rs b/src/lib.rs\n\
+--- a/src/lib.rs\t2026-06-26 10:00:00 +0000\n\
++++ b/src/lib.rs\t2026-06-26 10:01:00 +0000\n\
+@@ -1,1 +1,1 @@\n\
+-old\n\
++new\n";
+
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({"patch": patch}),
+            "tool:apply_patch",
+        );
+
+        assert_eq!(
+            request.persistent_ask_rules,
+            vec![ToolAskRule::file_path("apply_patch", "src/lib.rs")]
+        );
+    }
+
+    #[test]
+    fn apply_patch_ask_rule_ignores_forged_headers_inside_hunk() {
+        let patch = r"--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,3 @@
+ line1
+--- a/forged.rs
++++ b/forged.rs
+ line3
+";
+
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({"path": "src/lib.rs", "patch": patch}),
+            "tool:apply_patch",
+        );
+
+        assert_eq!(
+            request.persistent_ask_rules,
+            vec![ToolAskRule::file_path("apply_patch", "src/lib.rs")]
+        );
+    }
+
+    #[test]
+    fn apply_patch_ask_rule_skipped_when_any_target_traverses_workspace() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({
+                "changes": [
+                    { "path": "src/a.rs", "content": "safe" },
+                    { "path": "../escape.rs", "content": "unsafe" }
+                ]
+            }),
+            "tool:apply_patch",
+        );
+
+        assert!(request.persistent_ask_rules.is_empty());
+        assert!(!request.can_save_ask_rule());
+        assert_eq!(request.ask_rule_save_preview(), None);
+    }
+
+    #[test]
+    fn apply_patch_ask_rule_skipped_on_preflight_failure() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({"patch": "@@ -1 +1 @@\n-old\n+new\n"}),
+            "tool:apply_patch",
+        );
+
+        assert!(request.persistent_ask_rules.is_empty());
+        assert_eq!(request.ask_rule_preview(), None);
+        assert_eq!(request.ask_rule_save_preview(), None);
+    }
+
+    #[test]
+    fn ask_rule_save_preview_truncates_rule_list() {
+        let rules = vec![
+            ToolAskRule::file_path("apply_patch", "src/a.rs"),
+            ToolAskRule::file_path("apply_patch", "src/b.rs"),
+            ToolAskRule::file_path("apply_patch", "src/c.rs"),
+            ToolAskRule::file_path("apply_patch", "src/d.rs"),
+        ];
+
+        let preview = build_ask_rule_save_preview(&rules, 2).expect("save preview");
+        assert_eq!(preview.rule_count, 4);
+        assert_eq!(preview.summary(), "4 ask rules");
+        assert_eq!(
+            preview.entries,
+            vec![
+                "tool=apply_patch path=src/a.rs",
+                "tool=apply_patch path=src/b.rs"
+            ]
+        );
+        assert_eq!(preview.omitted, 2);
     }
 
     #[test]
@@ -2155,12 +2910,22 @@ mod tests {
         lines.join("\n").replace(' ', "")
     }
 
+    fn assert_approval_key_badges_visible(joined: &str) {
+        for badge in ["[1 / y]", "[2 / a]", "[3 / d / n]", "[Esc]"] {
+            assert!(
+                joined.contains(badge),
+                "missing key badge {badge}:\n{joined}"
+            );
+        }
+    }
+
     #[test]
     fn render_benign_includes_review_badge_and_selection_hint() {
         let view = ApprovalView::new(benign_request());
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
         assert!(joined.contains("REVIEW"), "missing REVIEW badge:\n{joined}");
+        assert_approval_key_badges_visible(&joined);
         assert!(joined.contains("Choose"), "benign hint missing:\n{joined}");
         assert!(
             joined.contains("Enter selected option"),
@@ -2178,6 +2943,7 @@ mod tests {
             joined.contains("DESTRUCTIVE"),
             "missing DESTRUCTIVE badge:\n{joined}"
         );
+        assert_approval_key_badges_visible(&joined);
         assert!(
             joined.contains("Enter selected option"),
             "destructive hint missing:\n{joined}"

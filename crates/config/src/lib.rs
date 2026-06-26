@@ -166,9 +166,9 @@ pub struct ProvidersToml {
 
 /// Sibling `permissions.toml` schema.
 ///
-/// This slice is intentionally ask-only: each rule is a typed condition that
-/// means "ask before this tool invocation." Typed allow/deny records and UI
-/// actions are expected to land in follow-up PRs.
+/// Each rule is a typed condition that can deny, allow, or ask before a tool
+/// invocation. UI actions that persist deny/allow rules are future work; the
+/// approval card still saves ask rules.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionsToml {
@@ -184,7 +184,39 @@ impl PermissionsToml {
 
     #[must_use]
     pub fn ruleset(&self) -> Ruleset {
-        Ruleset::user(Vec::new(), Vec::new()).with_ask_rules(self.rules.clone())
+        use codewhale_execpolicy::PermissionAction;
+        let mut denied = Vec::new();
+        let mut trusted = Vec::new();
+        let mut ask_rules = Vec::new();
+
+        for rule in &self.rules {
+            match rule.action {
+                PermissionAction::Deny => {
+                    // Command-based deny rules are promoted to denied_prefixes
+                    // so they are caught by execpolicy's deny-always-wins check.
+                    if let Some(cmd) = &rule.command {
+                        denied.push(cmd.clone());
+                    }
+                    // Always keep in ask_rules for path-based and tool-only matching.
+                    ask_rules.push(rule.clone());
+                }
+                PermissionAction::Allow => {
+                    // Command-based allow rules are promoted to trusted_prefixes
+                    // for arity-aware matching.  Path-only allow rules are
+                    // handled through ask_rules (they skip the approval prompt).
+                    if let Some(cmd) = &rule.command {
+                        trusted.push(cmd.clone());
+                    }
+                    // Keep in ask_rules so path-only allow rules also work.
+                    ask_rules.push(rule.clone());
+                }
+                PermissionAction::Ask => {
+                    ask_rules.push(rule.clone());
+                }
+            }
+        }
+
+        Ruleset::user(trusted, denied).with_ask_rules(ask_rules)
     }
 }
 
@@ -1462,6 +1494,19 @@ impl Default for NetworkPolicyToml {
     }
 }
 
+/// User-defined LSP server for one file extension (used inside
+/// [`LspConfigToml::custom`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CustomLspDef {
+    /// LSP `languageId` value used in `textDocument/didOpen`.
+    pub language_id: String,
+    /// Executable to spawn.
+    pub command: String,
+    /// Arguments passed to the executable.
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
 /// On-disk schema for the `[lsp]` table (#136). See `config.example.toml`
 /// for documentation. All fields are optional so the TUI runtime can fall
 /// back to its own defaults when keys are absent.
@@ -1477,6 +1522,9 @@ pub struct LspConfigToml {
     pub include_warnings: Option<bool>,
     /// Optional override for the `language -> [cmd, ...args]` table.
     pub servers: Option<BTreeMap<String, Vec<String>>>,
+    /// User-defined LSP servers for file extensions not in the built-in
+    /// registry. Keyed by extension (e.g. `"php"`, `"rb"`).
+    pub custom: Option<BTreeMap<String, CustomLspDef>>,
 }
 
 impl ConfigToml {

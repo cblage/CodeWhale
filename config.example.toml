@@ -181,20 +181,63 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 # prompt_suggestion = true  # opt-in: show ghost-text follow-up question in composer after each turn
 
 # Typed permission rules live in a sibling `permissions.toml` file, not in
-# config.toml. This shape is ask-only and feeds the execution policy engine;
-# allow/deny records, glob expansion, and UI persistence are intentionally out
-# of scope here.
+# config.toml. Each `[[rules]]` entry accepts `tool`, optional `command`
+# or `path`, and an `action` field: `"deny"`, `"ask"` (default), or `"allow"`.
+# Deny always wins over ask, which wins over allow.  Globs, broad directory
+# rules, and a rule editor/deleter UI are future work.
+#
+# In supported approval cards, press `S` to approve once and save exact rules
+# (currently saved as ask-only; deny/allow UI save is future work):
+#   exec_shell  -> exact approved command string
+#   write_file  -> exact workspace-relative target path
+#   edit_file   -> exact workspace-relative target path
+#   apply_patch -> one exact workspace-relative path per validated touched file
+# `read_file` rules can be written manually, but the approval UI does not save
+# them.
 #
 # Example ~/.codewhale/permissions.toml:
 #
 # [[rules]]
 # tool = "exec_shell"
 # command = "cargo test"
+# action = "ask"
+#
+# # Block dangerous commands
+# [[rules]]
+# tool = "exec_shell"
+# command = "sed"
+# action = "deny"
+#
+# [[rules]]
+# tool = "exec_shell"
+# command = "awk"
+# action = "deny"
+#
+# # Allow trusted commands without asking
+# [[rules]]
+# tool = "exec_shell"
+# command = "git status"
+# action = "allow"
+#
+# # Path-based deny
+# [[rules]]
+# tool = "write_file"
+# path = "src/main.rs"
+# action = "deny"
+#
+# [[rules]]
+# tool = "edit_file"
+# path = "src/lib.rs"
+# action = "ask"
+#
+# [[rules]]
+# tool = "apply_patch"
+# path = "src/patch-target.rs"
 #
 # [[rules]]
 # tool = "read_file"
 # path = "secrets/api_key.txt"
-
+# action = "deny"
 # ─────────────────────────────────────────────────────────────────────────────────
 # External Sandbox Backend (pluggable remote execution)
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -865,6 +908,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #   python     → pyright-langserver --stdio
 #   typescript → typescript-language-server --stdio
 #   java       → jdtls
+#   php        → intelephense --stdio
 #   vue        → vue-language-server --stdio
 #   c, cpp     → clangd
 #
@@ -872,6 +916,23 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # not required, and installing IntelliJ IDEA alone does not install `jdtls`.
 #
 # Override the defaults via the `servers` table below.
+#
+# For languages not in the built-in list (Ruby, C#, Swift, etc.), use
+# `[lsp.custom.<ext>]` to register a language server:
+#
+# [lsp.custom.rb]
+# command = "ruby-lsp"
+# args = ["--stdio"]
+# language_id = "ruby"
+#
+# [lsp.custom.cs]
+# command = "csharp-ls"
+# args = []
+# language_id = "csharp"
+#
+# [lsp.custom.swift]
+# command = "sourcekit-lsp"
+# language_id = "swift"
 [lsp]
 # enabled = true
 # poll_after_edit_ms = 5000
@@ -881,6 +942,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # rust = ["rust-analyzer"]
 # go = ["gopls", "serve"]
 # java = ["jdtls"]
+# php = ["intelephense", "--stdio"]
 # vue = ["vue-language-server", "--stdio"]
 
 # ─────────────────────────────────────────────────────────────────────────────────
