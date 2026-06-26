@@ -83,6 +83,8 @@ mod runtime_threads;
 mod sandbox;
 mod seam_manager;
 #[allow(dead_code)]
+mod session_diagnostics;
+#[allow(dead_code)]
 mod session_manager;
 mod settings;
 mod shell_dispatcher;
@@ -217,6 +219,8 @@ struct Cli {
 enum Commands {
     /// Run system diagnostics and check configuration
     Doctor(DoctorArgs),
+    /// Summarize failure signals from a local JSONL session log without raw content
+    SessionDiagnostics(SessionDiagnosticsArgs),
     /// Bootstrap MCP config and/or skills directories
     Setup(SetupArgs),
     /// Generate a remote CodeWhale agent deploy bundle (cloud + chat bridge)
@@ -684,6 +688,16 @@ struct DoctorArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+struct SessionDiagnosticsArgs {
+    /// JSONL session log to inspect
+    #[arg(value_name = "JSONL")]
+    path: PathBuf,
+    /// Emit machine-readable JSON with redacted source handles
+    #[arg(long, default_value_t = false)]
+    json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
 struct EvalArgs {
     /// Intentionally fail a specific step (list, read, search, edit, patch, shell)
     #[arg(long, value_name = "STEP")]
@@ -1144,6 +1158,7 @@ async fn main() -> Result<()> {
                     Ok(())
                 }
             }
+            Commands::SessionDiagnostics(args) => run_session_diagnostics(args),
             Commands::Setup(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
@@ -2511,6 +2526,25 @@ fn run_setup_clean(checkpoints_dir: &Path, force: bool) -> Result<()> {
     println!("{}", "Cleaned checkpoints:".bold());
     for path in &removed {
         println!("  ✓ {}", path.display());
+    }
+    Ok(())
+}
+
+fn run_session_diagnostics(args: SessionDiagnosticsArgs) -> Result<()> {
+    let contents = std::fs::read_to_string(&args.path).with_context(|| {
+        format!(
+            "read session diagnostic JSONL from {}",
+            crate::utils::display_path(&args.path)
+        )
+    })?;
+    let summary = crate::session_diagnostics::analyze_session_failure_jsonl(&contents);
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        println!(
+            "{}",
+            crate::session_diagnostics::format_redacted_failure_summary(&summary)
+        );
     }
     Ok(())
 }

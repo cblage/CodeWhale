@@ -143,6 +143,7 @@ fn feedback_help() -> String {
 fn bug_report_diagnostics_hint() -> &'static str {
     "Before filing, first check whether this looks like a model issue or an environment/tool issue: \
      command exit, network/service, sandbox/approval, missing dependency/path, timeout, or an unclosed turn. \
+     If you have a local JSONL log, run `codewhale session-diagnostics <path>` and include the redacted category summary. \
      Include the CodeWhale version, OS/terminal, the tool name, and redacted timestamps or log handles when available. \
      Do not paste prompts, secrets, raw command output, full local paths, or conversation transcripts."
 }
@@ -241,6 +242,7 @@ mod tests {
         assert!(message.contains("sandbox/approval"));
         assert!(message.contains("missing dependency/path"));
         assert!(message.contains("timeout"));
+        assert!(message.contains("codewhale session-diagnostics <path>"));
         assert!(message.contains("Do not paste prompts, secrets, raw command output"));
         assert!(message.contains(url));
         assert!(url.contains("template=bug_report.md"));
