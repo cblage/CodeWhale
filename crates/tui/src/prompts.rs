@@ -3327,4 +3327,15 @@ mod tests {
             "default agent prompt must not include calm.md overlay"
         );
     }
+
+    #[test]
+    fn default_prompt_stays_under_2953_static_baseline() {
+        const ISSUE_2953_BASELINE_CHARS: usize = 30_461;
+        let prompt = compose_prompt(Personality::Calm);
+
+        assert!(
+            prompt.chars().count() < ISSUE_2953_BASELINE_CHARS,
+            "default static prompt should stay below the #2953 baseline"
+        );
+    }
 }
