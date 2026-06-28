@@ -1233,6 +1233,13 @@ If you are upgrading from older releases:
   `.opencode/skills`, `.cursor/skills`, and `~/.agents/skills`. CodeWhale still
   scans `<workspace>/.codewhale/skills`, `~/.codewhale/skills`, and any explicit
   `skills_dir` override.
+- `[verifier].enabled` (bool, default `false`): enables automatic
+  claim-of-done verifier preview once that runtime trigger is active. The
+  manual `run_verifiers` tool is still available when this is false.
+- `[verifier].verdict_policy` (string, default `"hunt"`): maps verifier
+  `pass` / `partial` / `fail` into the goal verdict vocabulary
+  `hunted` / `wounded` / `escaped`. `"hunt"` is the only shipped policy today;
+  unknown values are rejected so future policies can be added deliberately.
 - `mcp_config_path` (string, optional): defaults to `~/.codewhale/mcp.json`, with
   legacy `~/.deepseek/mcp.json` fallback when the CodeWhale path is absent.
   It is visible in `/config` and can be changed from the TUI. The new path is

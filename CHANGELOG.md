@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registry submission for CodeWhale after validating the published
   `codewhale@0.8.65` ACP auth handshake against the upstream registry checker
   (#3192).
+- Added a typed `[verifier]` config table for the verifier-preview lane, with
+  `enabled` and the shipped `verdict_policy = "hunt"` mapping documented and
+  validated (#2093).
 
 ### Changed
 

@@ -27,6 +27,37 @@ fn network_policy_toml_deserializes_proxy_hosts() {
 }
 
 #[test]
+fn verifier_config_defaults_to_hunt_verdict_policy() {
+    let config: ConfigToml = toml::from_str(
+        r#"
+        [verifier]
+        enabled = true
+        "#,
+    )
+    .expect("verifier config toml");
+
+    let verifier = config.verifier.expect("verifier table");
+    assert!(verifier.enabled);
+    assert_eq!(verifier.verdict_policy, VerifierVerdictPolicy::Hunt);
+}
+
+#[test]
+fn verifier_config_rejects_unknown_verdict_policy() {
+    let err = toml::from_str::<ConfigToml>(
+        r#"
+        [verifier]
+        verdict_policy = "strict"
+        "#,
+    )
+    .expect_err("only the shipped hunt policy should parse");
+
+    assert!(
+        err.message().contains("unknown variant"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn permissions_toml_deserializes_typed_ask_rules() {
     let permissions: PermissionsToml = toml::from_str(
         r#"
