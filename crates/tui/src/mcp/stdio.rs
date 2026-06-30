@@ -66,6 +66,7 @@ impl StdioTransport {
         config: &McpServerConfig,
     ) -> Result<Self> {
         let mut cmd = tokio::process::Command::new(command);
+        crate::utils::suppress_tokio_console_window(&mut cmd);
         cmd.args(&config.args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
