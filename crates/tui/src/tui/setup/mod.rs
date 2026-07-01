@@ -137,6 +137,8 @@ pub struct SetupWizardView {
     facts: SetupRuntimeFacts,
     guided_draft: GuidedConstitutionDraft,
     guided_preview_seen: bool,
+    runtime_preset: SetupRuntimePreset,
+    runtime_preset_preview_seen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,10 +152,15 @@ struct SetupRuntimeFacts {
     work_intent: String,
     approval: String,
     shell: String,
+    allow_shell_enabled: bool,
     trust: String,
     sandbox: String,
+    sandbox_mode_value: String,
     network: String,
+    network_default_value: String,
     runtime_result: String,
+    default_mode: String,
+    approval_policy_value: String,
     constitution_autonomy: String,
     constitution_file: SetupConstitutionFileState,
 }
@@ -170,10 +177,15 @@ impl Default for SetupRuntimeFacts {
             work_intent: "not loaded".to_string(),
             approval: "not loaded".to_string(),
             shell: "not loaded".to_string(),
+            allow_shell_enabled: false,
             trust: "not loaded".to_string(),
             sandbox: "not configured".to_string(),
+            sandbox_mode_value: "default".to_string(),
             network: "not configured".to_string(),
+            network_default_value: "prompt".to_string(),
             runtime_result: "runtime posture not loaded".to_string(),
+            default_mode: "agent".to_string(),
+            approval_policy_value: "on-request".to_string(),
             constitution_autonomy: "not loaded".to_string(),
             constitution_file: SetupConstitutionFileState::NotChecked,
         }
@@ -224,6 +236,11 @@ impl SetupRuntimeFacts {
             .filter(|mode| !mode.trim().is_empty())
             .unwrap_or("default")
             .to_string();
+        let sandbox_mode_value = sandbox.clone();
+        let network_default_value = config
+            .network
+            .as_ref()
+            .map_or("prompt".to_string(), |policy| policy.default.clone());
         let network = config
             .network
             .as_ref()
@@ -264,13 +281,117 @@ impl SetupRuntimeFacts {
             work_intent: app.mode.display_name().to_string(),
             approval: app.approval_mode.label().to_ascii_lowercase(),
             shell,
+            allow_shell_enabled: app.allow_shell,
             trust,
             sandbox,
+            sandbox_mode_value,
             network,
+            network_default_value,
             runtime_result,
+            default_mode: app.mode.as_setting().to_string(),
+            approval_policy_value: config
+                .approval_policy
+                .as_deref()
+                .filter(|policy| !policy.trim().is_empty())
+                .unwrap_or("on-request")
+                .to_string(),
             constitution_autonomy,
             constitution_file: SetupConstitutionFileState::load(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupRuntimePreset {
+    AskFirst,
+    NormalAgent,
+    HighTrustLocal,
+}
+
+impl Default for SetupRuntimePreset {
+    fn default() -> Self {
+        Self::NormalAgent
+    }
+}
+
+impl SetupRuntimePreset {
+    const ALL: [Self; 3] = [Self::AskFirst, Self::NormalAgent, Self::HighTrustLocal];
+
+    fn from_key(key: char) -> Option<Self> {
+        match key {
+            '1' => Some(Self::AskFirst),
+            '2' => Some(Self::NormalAgent),
+            '3' => Some(Self::HighTrustLocal),
+            _ => None,
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::AskFirst => "ask-first",
+            Self::NormalAgent => "normal-agent",
+            Self::HighTrustLocal => "high-trust-local",
+        }
+    }
+
+    fn title_id(self) -> MessageId {
+        match self {
+            Self::AskFirst => MessageId::SetupRuntimePresetAskFirstTitle,
+            Self::NormalAgent => MessageId::SetupRuntimePresetNormalAgentTitle,
+            Self::HighTrustLocal => MessageId::SetupRuntimePresetHighTrustTitle,
+        }
+    }
+
+    fn description_id(self) -> MessageId {
+        match self {
+            Self::AskFirst => MessageId::SetupRuntimePresetAskFirstDescription,
+            Self::NormalAgent => MessageId::SetupRuntimePresetNormalAgentDescription,
+            Self::HighTrustLocal => MessageId::SetupRuntimePresetHighTrustDescription,
+        }
+    }
+
+    pub fn default_mode(self) -> &'static str {
+        match self {
+            Self::AskFirst => "plan",
+            Self::NormalAgent => "agent",
+            Self::HighTrustLocal => "yolo",
+        }
+    }
+
+    pub fn approval_policy(self) -> Option<&'static str> {
+        match self {
+            Self::AskFirst | Self::NormalAgent => Some("on-request"),
+            // YOLO derives bypass approval from `default_mode = "yolo"`.
+            // `approval_policy = "bypass"` is intentionally not a persisted
+            // config value in v0.8.67.
+            Self::HighTrustLocal => None,
+        }
+    }
+
+    pub fn allow_shell(self) -> bool {
+        match self {
+            Self::AskFirst => false,
+            Self::NormalAgent | Self::HighTrustLocal => true,
+        }
+    }
+
+    pub fn sandbox_mode(self) -> &'static str {
+        match self {
+            Self::AskFirst => "read-only",
+            Self::NormalAgent | Self::HighTrustLocal => "workspace-write",
+        }
+    }
+
+    pub fn result_summary(self) -> String {
+        let approval = self.approval_policy().unwrap_or("mode-derived-yolo-bypass");
+        format!(
+            "preset={}, default_mode={}, approval_policy={}, allow_shell={}, sandbox_mode={}, network=unchanged, trust=unchanged",
+            self.id(),
+            self.default_mode(),
+            approval,
+            self.allow_shell(),
+            self.sandbox_mode()
+        )
     }
 }
 
@@ -799,6 +920,8 @@ impl SetupWizardView {
             facts: SetupRuntimeFacts::default(),
             guided_draft: GuidedConstitutionDraft::default(),
             guided_preview_seen: false,
+            runtime_preset: SetupRuntimePreset::default(),
+            runtime_preset_preview_seen: false,
         }
     }
 
@@ -845,6 +968,8 @@ impl SetupWizardView {
             facts,
             guided_draft: GuidedConstitutionDraft::default(),
             guided_preview_seen: false,
+            runtime_preset: SetupRuntimePreset::default(),
+            runtime_preset_preview_seen: false,
         }
     }
 
@@ -861,6 +986,8 @@ impl SetupWizardView {
             facts,
             guided_draft: GuidedConstitutionDraft::default(),
             guided_preview_seen: false,
+            runtime_preset: SetupRuntimePreset::default(),
+            runtime_preset_preview_seen: false,
         }
     }
 
@@ -938,6 +1065,45 @@ impl SetupWizardView {
         ViewAction::Emit(ViewEvent::SetupStateCommitRequested {
             state,
             message: tr(self.locale, MessageId::SetupRuntimePostureReviewed).to_string(),
+        })
+    }
+
+    fn select_runtime_preset(&mut self, key: char) -> ViewAction {
+        if let Some(preset) = SetupRuntimePreset::from_key(key)
+            && preset != self.runtime_preset
+        {
+            self.runtime_preset = preset;
+            self.runtime_preset_preview_seen = false;
+        }
+        ViewAction::None
+    }
+
+    fn preview_runtime_preset(&mut self) -> ViewAction {
+        self.runtime_preset_preview_seen = true;
+        ViewAction::Emit(ViewEvent::OpenTextPager {
+            title: tr(self.locale, MessageId::SetupRuntimePresetPreviewTitle).to_string(),
+            content: runtime_preset_preview_text(self.locale, self.runtime_preset, &self.facts),
+        })
+    }
+
+    fn commit_runtime_preset(&mut self) -> ViewAction {
+        if !self.runtime_preset_preview_seen {
+            return self.preview_runtime_preset();
+        }
+
+        let mut state = self.state.clone();
+        state.runtime_posture_source = RuntimePostureSource::Confirmed;
+        state.set_step(
+            SetupStep::TrustSandbox,
+            StepEntry::new(StepStatus::Verified, true, CONSTITUTION_CHECKPOINT_VERSION)
+                .with_result(self.runtime_preset.result_summary()),
+        );
+        self.state = state.clone();
+        self.move_next();
+        ViewAction::Emit(ViewEvent::SetupRuntimePresetApplyRequested {
+            preset: self.runtime_preset,
+            state,
+            message: tr(self.locale, MessageId::SetupRuntimePresetApplied).to_string(),
         })
     }
 
@@ -1102,6 +1268,14 @@ impl ModalView for SetupWizardView {
             KeyCode::Char('c') if self.selected_step() == SetupStep::TrustSandbox => {
                 ViewAction::EmitAndClose(ViewEvent::SetupOpenConfigRequested)
             }
+            KeyCode::Char(key @ ('1' | '2' | '3'))
+                if self.selected_step() == SetupStep::TrustSandbox =>
+            {
+                self.select_runtime_preset(key)
+            }
+            KeyCode::Char('a') if self.selected_step() == SetupStep::TrustSandbox => {
+                self.commit_runtime_preset()
+            }
             KeyCode::Char(key @ ('1' | '2' | '3' | '4' | '5' | '6'))
                 if self.selected_step() == SetupStep::Constitution =>
             {
@@ -1188,6 +1362,14 @@ impl ModalView for SetupWizardView {
                 tr(self.locale, MessageId::SetupActionModel).to_string(),
             ));
         } else if self.selected_step() == SetupStep::TrustSandbox {
+            hints.push(ActionHint::new(
+                "1-3",
+                tr(self.locale, MessageId::SetupActionRuntimePreset).to_string(),
+            ));
+            hints.push(ActionHint::new(
+                "A",
+                tr(self.locale, MessageId::SetupActionApplyRuntimePreset).to_string(),
+            ));
             hints.push(ActionHint::new(
                 "M",
                 tr(self.locale, MessageId::SetupActionMode).to_string(),
@@ -1363,22 +1545,58 @@ impl SetupWizardView {
     }
 
     fn runtime_posture_detail_lines(&self) -> Vec<Line<'static>> {
-        vec![
+        let mut lines = vec![
             self.detail_row(MessageId::SetupCardIntentLabel, &self.facts.work_intent),
             self.detail_row(MessageId::SetupCardApprovalLabel, &self.facts.approval),
             self.detail_row(MessageId::SetupCardShellLabel, &self.facts.shell),
             self.detail_row(MessageId::SetupCardTrustLabel, &self.facts.trust),
             self.detail_row(MessageId::SetupCardSandboxLabel, &self.facts.sandbox),
             self.detail_row(MessageId::SetupCardNetworkLabel, &self.facts.network),
+            self.detail_row(
+                MessageId::SetupRuntimePresetSelectedLabel,
+                &runtime_preset_summary(self.locale, self.runtime_preset),
+            ),
+            self.detail_row(
+                MessageId::SetupRuntimePresetDiffLabel,
+                &runtime_preset_inline_diff(self.runtime_preset, &self.facts),
+            ),
             Line::from(Span::styled(
                 tr(self.locale, MessageId::SetupRuntimePostureBoundary).to_string(),
+                Style::default().fg(palette::TEXT_MUTED),
+            )),
+            Line::from(Span::styled(
+                tr(self.locale, MessageId::SetupRuntimePresetSafetyFloor).to_string(),
                 Style::default().fg(palette::TEXT_MUTED),
             )),
             Line::from(Span::styled(
                 tr(self.locale, MessageId::SetupRuntimePostureReviewHint).to_string(),
                 Style::default().fg(palette::TEXT_MUTED),
             )),
-        ]
+            Line::from(Span::styled(
+                tr(self.locale, MessageId::SetupRuntimePresetApplyHint).to_string(),
+                Style::default().fg(palette::TEXT_MUTED),
+            )),
+        ];
+        for (idx, preset) in SetupRuntimePreset::ALL.iter().enumerate() {
+            let marker = if *preset == self.runtime_preset {
+                ">"
+            } else {
+                " "
+            };
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{marker} {}. {}",
+                    idx + 1,
+                    runtime_preset_summary(self.locale, *preset)
+                ),
+                Style::default().fg(if *preset == self.runtime_preset {
+                    palette::TEXT_PRIMARY
+                } else {
+                    palette::TEXT_MUTED
+                }),
+            )));
+        }
+        lines
     }
 
     fn verification_detail_lines(&self) -> Vec<Line<'static>> {
@@ -1526,6 +1744,76 @@ impl SetupWizardView {
 
 fn setup_report_ready(state: &SetupState) -> bool {
     state.first_run_ready() || state.update_ready(CONSTITUTION_CHECKPOINT_VERSION)
+}
+
+fn runtime_preset_summary(locale: Locale, preset: SetupRuntimePreset) -> String {
+    format!(
+        "{} - {}",
+        tr(locale, preset.title_id()),
+        tr(locale, preset.description_id())
+    )
+}
+
+fn runtime_preset_inline_diff(preset: SetupRuntimePreset, facts: &SetupRuntimeFacts) -> String {
+    runtime_preset_diff_rows(preset, facts).join("; ")
+}
+
+fn runtime_preset_preview_text(
+    locale: Locale,
+    preset: SetupRuntimePreset,
+    facts: &SetupRuntimeFacts,
+) -> String {
+    let mut lines = vec![
+        tr(locale, MessageId::SetupRuntimePresetPreviewTitle).to_string(),
+        runtime_preset_summary(locale, preset),
+        String::new(),
+        tr(locale, MessageId::SetupRuntimePresetDiffLabel).to_string(),
+    ];
+    lines.extend(
+        runtime_preset_diff_rows(preset, facts)
+            .into_iter()
+            .map(|row| format!("- {row}")),
+    );
+    lines.extend([
+        String::new(),
+        tr(locale, MessageId::SetupRuntimePostureBoundary).to_string(),
+        tr(locale, MessageId::SetupRuntimePresetSafetyFloor).to_string(),
+        tr(locale, MessageId::SetupRuntimePresetApplyHint).to_string(),
+    ]);
+    lines.join("\n")
+}
+
+fn runtime_preset_diff_rows(preset: SetupRuntimePreset, facts: &SetupRuntimeFacts) -> Vec<String> {
+    let approval_target = preset.approval_policy().map_or_else(
+        || "unchanged; YOLO derives bypass from default_mode".to_string(),
+        ToString::to_string,
+    );
+    vec![
+        format!(
+            "settings.default_mode: {} -> {}",
+            facts.default_mode,
+            preset.default_mode()
+        ),
+        format!(
+            "config.approval_policy: {} -> {}",
+            facts.approval_policy_value, approval_target
+        ),
+        format!(
+            "config.allow_shell: {} -> {}",
+            facts.allow_shell_enabled,
+            preset.allow_shell()
+        ),
+        format!(
+            "config.sandbox_mode: {} -> {}",
+            facts.sandbox_mode_value,
+            preset.sandbox_mode()
+        ),
+        format!(
+            "config.network.default: {} -> unchanged",
+            facts.network_default_value
+        ),
+        format!("workspace trust: {} -> unchanged", facts.trust),
+    ]
 }
 
 fn setup_report_result(state: &SetupState, facts: &SetupRuntimeFacts) -> String {
@@ -2279,6 +2567,97 @@ mod tests {
             RuntimePostureSource::Confirmed
         );
         assert!(message.contains("Runtime posture reviewed"));
+        assert_eq!(view.selected_step(), SetupStep::ToolsMcp);
+    }
+
+    #[test]
+    fn runtime_posture_detail_lines_show_preset_diff() {
+        let facts = SetupRuntimeFacts {
+            default_mode: "agent".to_string(),
+            approval_policy_value: "on-request".to_string(),
+            allow_shell_enabled: true,
+            sandbox_mode_value: "workspace-write".to_string(),
+            network_default_value: "prompt".to_string(),
+            trust: "workspace trust not elevated".to_string(),
+            ..SetupRuntimeFacts::default()
+        };
+        let view = SetupWizardView::new_at_with_facts(
+            SetupState::default(),
+            Locale::En,
+            SetupStep::TrustSandbox,
+            facts,
+        );
+
+        let text = lines_to_text(view.runtime_posture_detail_lines());
+
+        assert!(text.contains("Selected preset:"));
+        assert!(text.contains("Normal agent"));
+        assert!(text.contains("settings.default_mode: agent -> agent"));
+        assert!(text.contains("config.allow_shell: true -> true"));
+        assert!(text.contains("Safety floor:"));
+        assert!(text.contains("Press A to preview"));
+    }
+
+    #[test]
+    fn runtime_posture_preset_requires_preview_before_apply() {
+        let facts = SetupRuntimeFacts {
+            default_mode: "agent".to_string(),
+            approval_policy_value: "never".to_string(),
+            allow_shell_enabled: false,
+            sandbox_mode_value: "read-only".to_string(),
+            network_default_value: "deny".to_string(),
+            trust: "workspace trust not elevated".to_string(),
+            ..SetupRuntimeFacts::default()
+        };
+        let mut view = SetupWizardView::new_at_with_facts(
+            SetupState::default(),
+            Locale::En,
+            SetupStep::TrustSandbox,
+            facts,
+        );
+
+        assert!(matches!(
+            view.handle_key(key(KeyCode::Char('3'))),
+            ViewAction::None
+        ));
+        let preview = view.handle_key(key(KeyCode::Char('a')));
+        let ViewAction::Emit(ViewEvent::OpenTextPager { content, .. }) = preview else {
+            panic!("first apply should preview the exact diff");
+        };
+        assert!(content.contains("Runtime Posture Preset Preview"));
+        assert!(content.contains("settings.default_mode: agent -> yolo"));
+        assert!(content.contains(
+            "config.approval_policy: never -> unchanged; YOLO derives bypass from default_mode"
+        ));
+        assert!(content.contains("config.network.default: deny -> unchanged"));
+
+        let action = view.handle_key(key(KeyCode::Char('a')));
+        let ViewAction::Emit(ViewEvent::SetupRuntimePresetApplyRequested {
+            preset,
+            state,
+            message,
+        }) = action
+        else {
+            panic!("second apply should request preset persistence");
+        };
+        assert_eq!(preset, SetupRuntimePreset::HighTrustLocal);
+        assert_eq!(state.status(SetupStep::TrustSandbox), StepStatus::Verified);
+        assert_eq!(
+            state.runtime_posture_source,
+            RuntimePostureSource::Confirmed
+        );
+        assert!(
+            state
+                .steps
+                .get(&SetupStep::TrustSandbox)
+                .and_then(|entry| entry.result.as_deref())
+                .is_some_and(|result| {
+                    result.contains("preset=high-trust-local")
+                        && result.contains("default_mode=yolo")
+                        && result.contains("network=unchanged")
+                })
+        );
+        assert!(message.contains("Runtime preset applied"));
         assert_eq!(view.selected_step(), SetupStep::ToolsMcp);
     }
 

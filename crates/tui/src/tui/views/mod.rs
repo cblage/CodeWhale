@@ -623,6 +623,13 @@ pub enum ViewEvent {
         state: codewhale_config::SetupState,
         message: String,
     },
+    /// Emitted by the setup Runtime Posture card after the user has previewed
+    /// and confirmed an explicit preset/config diff.
+    SetupRuntimePresetApplyRequested {
+        preset: crate::tui::setup::SetupRuntimePreset,
+        state: codewhale_config::SetupState,
+        message: String,
+    },
     /// Emitted by the setup Provider/Model readiness card to hand off to the
     /// existing provider manager instead of duplicating provider auth UI.
     SetupOpenProviderRequested,

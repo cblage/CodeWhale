@@ -9608,6 +9608,19 @@ async fn handle_view_events(
                         Some(format!("User constitution could not be saved: {err}"));
                 }
             },
+            ViewEvent::SetupRuntimePresetApplyRequested {
+                preset,
+                state,
+                message,
+            } => match apply_setup_runtime_preset(app, config, preset, state) {
+                Ok(summary) => {
+                    app.status_message = Some(format!("{message} {summary}"));
+                }
+                Err(err) => {
+                    app.status_message =
+                        Some(format!("Runtime preset could not be applied: {err:#}"));
+                }
+            },
             ViewEvent::SetupOpenProviderRequested => {
                 if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
                     let runtime_status = query_provider_runtime_status(engine_handle).await;
@@ -9856,6 +9869,67 @@ async fn apply_approval_decision(
             app.status_message = Some("Request cancelled".to_string());
         }
     }
+}
+
+fn apply_setup_runtime_preset(
+    app: &mut App,
+    config: &mut Config,
+    preset: crate::tui::setup::SetupRuntimePreset,
+    state: codewhale_config::SetupState,
+) -> Result<String> {
+    let mut settings = Settings::load().context("failed to load settings")?;
+    settings.default_mode = preset.default_mode().to_string();
+    settings.save().context("failed to save settings")?;
+
+    let config_path = app.config_path.as_deref();
+    if let Some(policy) = preset.approval_policy() {
+        crate::config_persistence::persist_root_string_key(config_path, "approval_policy", policy)
+            .context("failed to persist approval_policy")?;
+        config.approval_policy = Some(policy.to_string());
+    }
+    crate::config_persistence::persist_root_bool_key(
+        config_path,
+        "allow_shell",
+        preset.allow_shell(),
+    )
+    .context("failed to persist allow_shell")?;
+    config.allow_shell = Some(preset.allow_shell());
+    crate::config_persistence::persist_root_string_key(
+        config_path,
+        "sandbox_mode",
+        preset.sandbox_mode(),
+    )
+    .context("failed to persist sandbox_mode")?;
+    config.sandbox_mode = Some(preset.sandbox_mode().to_string());
+
+    let mode = AppMode::from_setting(preset.default_mode());
+    app.set_mode(mode);
+    app.allow_shell = preset.allow_shell();
+    if let Some(policy) = preset.approval_policy() {
+        app.approval_mode =
+            ApprovalMode::from_config_value(policy).unwrap_or(ApprovalMode::Suggest);
+    }
+    match preset {
+        crate::tui::setup::SetupRuntimePreset::AskFirst => {
+            app.trust_mode = false;
+            app.yolo = false;
+        }
+        crate::tui::setup::SetupRuntimePreset::NormalAgent => {
+            app.yolo = false;
+        }
+        crate::tui::setup::SetupRuntimePreset::HighTrustLocal => {
+            app.approval_mode = ApprovalMode::Bypass;
+            app.trust_mode = true;
+            app.yolo = true;
+        }
+    }
+    app.needs_redraw = true;
+
+    state
+        .save()
+        .context("failed to persist setup runtime posture state")?;
+
+    Ok(format!("Applied {}.", preset.result_summary()))
 }
 
 fn persist_ask_rules_from_approval(

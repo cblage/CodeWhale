@@ -2012,6 +2012,69 @@ fn setup_checkpoint_waits_for_onboarding_and_skip_flag() {
     assert!(app.view_stack.is_empty());
 }
 
+#[test]
+fn setup_runtime_preset_apply_persists_settings_config_and_state() {
+    let _home = SettingsHomeGuard::new();
+    let config_path = crate::config_persistence::config_toml_path(None).expect("config path");
+    std::fs::create_dir_all(config_path.parent().expect("config parent"))
+        .expect("config parent exists");
+    std::fs::write(
+        &config_path,
+        "# preserve this comment\nmodel = \"deepseek-v4-pro\"\n",
+    )
+    .expect("seed config");
+
+    let mut app = create_test_app();
+    app.config_path = Some(config_path.clone());
+    let mut config = Config::default();
+    let preset = crate::tui::setup::SetupRuntimePreset::AskFirst;
+    let mut state = codewhale_config::SetupState::default();
+    state.runtime_posture_source = codewhale_config::RuntimePostureSource::Confirmed;
+    state.set_step(
+        codewhale_config::SetupStep::TrustSandbox,
+        codewhale_config::StepEntry::new(
+            codewhale_config::StepStatus::Verified,
+            true,
+            crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
+        )
+        .with_result(preset.result_summary()),
+    );
+
+    let summary =
+        apply_setup_runtime_preset(&mut app, &mut config, preset, state).expect("apply preset");
+
+    assert!(summary.contains("preset=ask-first"));
+    let settings = Settings::load().expect("load saved settings");
+    assert_eq!(settings.default_mode, "plan");
+    assert_eq!(app.mode, AppMode::Plan);
+    assert!(!app.allow_shell);
+    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+    assert_eq!(config.allow_shell, Some(false));
+    assert_eq!(config.approval_policy.as_deref(), Some("on-request"));
+    assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
+
+    let body = std::fs::read_to_string(&config_path).expect("read saved config");
+    assert!(
+        body.contains("# preserve this comment"),
+        "comment lost: {body}"
+    );
+    assert!(body.contains("approval_policy = \"on-request\""));
+    assert!(body.contains("allow_shell = false"));
+    assert!(body.contains("sandbox_mode = \"read-only\""));
+
+    let saved_state = codewhale_config::SetupState::load()
+        .expect("load setup state")
+        .expect("setup state exists");
+    assert_eq!(
+        saved_state.status(codewhale_config::SetupStep::TrustSandbox),
+        codewhale_config::StepStatus::Verified
+    );
+    assert_eq!(
+        saved_state.runtime_posture_source,
+        codewhale_config::RuntimePostureSource::Confirmed
+    );
+}
+
 #[tokio::test]
 // This test intentionally pins the process-global spillover root until the
 // async receipt path finishes.
