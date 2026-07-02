@@ -105,6 +105,50 @@ the #3412/#3794 acceptance alternative of "documented fallback" for
 zh-Hant; full zh-Hant coverage (or a zh-Hans fallback chain) remains open
 as follow-up localization work.
 
+## Release-Orchestration Snapshot (2026-07-01)
+
+- Branch: `claude/v0.8.67-constitution-setup-174rj9`
+- Head: `19971477a`
+- Workspace version observed in `Cargo.toml`: `0.8.66`
+
+Landed since the prior snapshot: `008987464` (constitution-first setup copy
+polish — welcome dual-meaning arc, ritual draft invitation, powers-and-limits
+plus continuity-not-memory ratification framing, drafting-prompt steering),
+`b58dcf99c` (#3884: sub-agent failure records carry the full classified error
+chain), `b4ca8b539` (#3883: durable-review floor keys on action kind; routine
+YOLO background work no longer prompts; destructive/publish holds preserved),
+`19971477a` (QA-matrix rows for failed health check and legacy `.deepseek`
+config migration).
+
+Gate results at this head (exact observed counts):
+
+```
+cargo fmt --all -- --check                     PASS
+git diff --check                               PASS
+jq empty crates/tui/locales/*.json             PASS (7 files incl. zh-Hant)
+cargo test -p codewhale-config --lib           342 passed; 0 failed
+cargo test ... --locked setup                  127 passed; 0 failed
+cargo test ... --locked constitution            42 passed; 0 failed
+cargo test ... --locked context_report          10 passed; 0 failed
+cargo test ... --locked doctor_setup             5 passed; 0 failed
+cargo test ... --locked tui::onboarding          9 passed; 0 failed
+RUSTFLAGS="-D warnings" cargo test ... --no-run  clean (1m 07s)
+cargo build --release -p codewhale-cli -p codewhale-tui  clean (1m 02s)
+```
+
+Additional suites exercised for the two fix commits: yolo_mode 10, auto_review
+31, approval 163, engine 272, widgets 186, command_safety 58, client 240,
+retry 41, subagent 256 — all passing.
+
+## Localization Coverage and Fallback (other locales)
+
+Like zh-Hant, the `es-419`, `ja`, `pt-BR`, and `vi` catalogs do not yet carry
+the v0.8.67 setup/constitution keys (their catalogs predate this lane); those
+strings render in **English** through the same `fallback = ["en"]` loader.
+This is the accepted state for v0.8.67; expanding setup/constitution coverage
+to the remaining full locales is follow-up localization work (tracked under
+the #3792/#3793 localization residuals).
+
 ## Remaining Manual Evidence
 
 Before the release is called ready, keep the final manual pass from the QA
