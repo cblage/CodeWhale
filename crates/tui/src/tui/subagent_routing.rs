@@ -426,10 +426,18 @@ pub(super) fn format_task_list(tasks: &[TaskSummary]) -> String {
 
     let show_verdict = tasks.iter().any(|task| task.hunt_verdict.is_some());
     let mut lines = vec![format!("Tasks ({})", tasks.len())];
+    // Build headers with the same format strings as the rows so the ID
+    // column (21-char `task_` ids) can never drift out of alignment again.
     if show_verdict {
-        lines.push("ID             Status     Verdict     Time  Title".to_string());
+        lines.push(format!(
+            "{:<21}  {:<9}  {:<7}  {:>8}  {}",
+            "ID", "Status", "Verdict", "Time", "Title"
+        ));
     } else {
-        lines.push("ID             Status        Time  Title".to_string());
+        lines.push(format!(
+            "{:<21}  {:<9}  {:>8}  {}",
+            "ID", "Status", "Time", "Title"
+        ));
     }
     lines.push("------------------------------------------------------------".to_string());
     for task in tasks {
@@ -439,7 +447,7 @@ pub(super) fn format_task_list(tasks: &[TaskSummary]) -> String {
             .unwrap_or_else(|| "-".to_string());
         if show_verdict {
             lines.push(format!(
-                "{:<13}  {:<9}  {:<7}  {:>8}  {}",
+                "{:<21}  {:<9}  {:<7}  {:>8}  {}",
                 task.id,
                 task_status_label(task.status),
                 hunt_verdict_glyph(task.hunt_verdict.as_deref()),
@@ -448,7 +456,7 @@ pub(super) fn format_task_list(tasks: &[TaskSummary]) -> String {
             ));
         } else {
             lines.push(format!(
-                "{:<13}  {:<9}  {:>8}  {}",
+                "{:<21}  {:<9}  {:>8}  {}",
                 task.id,
                 task_status_label(task.status),
                 duration,
@@ -658,9 +666,18 @@ mod tests {
             task_summary("task_abcdef12", TaskStatus::Completed, Some(1234)),
         ]);
 
-        assert!(output.contains("ID             Status        Time  Title"));
-        assert!(output.contains("task_12345678  running           -  Fix task list output"));
-        assert!(output.contains("task_abcdef12  completed     1.23s  Fix task list output"));
+        assert!(output.contains(&format!(
+            "{:<21}  {:<9}  {:>8}  {}",
+            "ID", "Status", "Time", "Title"
+        )));
+        assert!(output.contains(&format!(
+            "{:<21}  {:<9}  {:>8}  {}",
+            "task_12345678", "running", "-", "Fix task list output"
+        )));
+        assert!(output.contains(&format!(
+            "{:<21}  {:<9}  {:>8}  {}",
+            "task_abcdef12", "completed", "1.23s", "Fix task list output"
+        )));
     }
 
     #[test]
@@ -674,10 +691,10 @@ mod tests {
 
         let output = format_task_list(&[hunted, wounded, escaped]);
 
-        assert!(output.contains("ID             Status     Verdict"));
-        assert!(output.contains("task_hunted    completed  ✓"));
-        assert!(output.contains("task_wounded   completed  !"));
-        assert!(output.contains("task_escaped   failed     ×"));
+        assert!(output.contains(&format!("{:<21}  {:<9}  {:<7}", "ID", "Status", "Verdict")));
+        assert!(output.contains(&format!("{:<21}  {:<9}  ✓", "task_hunted", "completed")));
+        assert!(output.contains(&format!("{:<21}  {:<9}  !", "task_wounded", "completed")));
+        assert!(output.contains(&format!("{:<21}  {:<9}  ×", "task_escaped", "failed")));
     }
 
     #[test]

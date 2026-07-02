@@ -852,7 +852,13 @@ impl TaskManager {
 
         let task = TaskRecord {
             schema_version: CURRENT_TASK_SCHEMA_VERSION,
-            id: format!("task_{}", &Uuid::new_v4().to_string()[..8]),
+            // 16 random hex chars (was 8; ~60 bits of entropy once UUIDv4's
+            // fixed version nibble is discounted): task ids live in durable
+            // state that accumulates across restarts, and a collision
+            // overwrites a record while leaving a duplicate queue entry.
+            // `resolve_task_id` matches by prefix, so short references still
+            // work.
+            id: format!("task_{}", &Uuid::new_v4().simple().to_string()[..16]),
             prompt,
             model: req.model.unwrap_or_else(|| self.cfg.default_model.clone()),
             workspace: match req.workspace {
