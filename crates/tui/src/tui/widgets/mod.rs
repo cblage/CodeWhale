@@ -1501,10 +1501,6 @@ impl Renderable for ApprovalWidget<'_> {
     }
 }
 
-/// Compute the card rect inside `area`. Always centered; pad on every
-/// side so the takeover reads as a takeover but a small terminal still
-/// stays inside the buffer. Very small terminals may truncate the card
-/// content, but rendering must never address cells outside `area`.
 /// Bottom-anchored band the inline approval prompt occupies within `area`.
 /// Sized to the measured content but never taller than the frame, and always
 /// tall enough to show the reserved controls (#3799).
