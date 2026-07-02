@@ -5457,6 +5457,7 @@ async fn handle_setup_constitution_model_draft(
     app: &mut App,
     config: &Config,
     draft: crate::tui::setup::GuidedConstitutionDraft,
+    freeform_note: Option<String>,
     locale: crate::localization::Locale,
 ) {
     // Spawn the draft off the event loop (same pattern as the fleet drafter,
@@ -5500,6 +5501,7 @@ async fn handle_setup_constitution_model_draft(
                 &client,
                 &request_model,
                 draft,
+                freeform_note,
                 locale,
             ),
         )
@@ -9939,8 +9941,13 @@ async fn handle_view_events(
                         Some(format!("User constitution could not be saved: {err}"));
                 }
             },
-            ViewEvent::SetupConstitutionModelDraftRequested { draft, locale } => {
-                handle_setup_constitution_model_draft(app, config, draft, locale).await;
+            ViewEvent::SetupConstitutionModelDraftRequested {
+                draft,
+                freeform_note,
+                locale,
+            } => {
+                handle_setup_constitution_model_draft(app, config, draft, freeform_note, locale)
+                    .await;
             }
             ViewEvent::FleetProfileModelDraftRequested {
                 role,

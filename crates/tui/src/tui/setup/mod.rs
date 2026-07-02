@@ -34,6 +34,7 @@ use codewhale_config::{
     AutonomyPreference, ConstitutionAuthoring, ConstitutionChoice, ConstitutionSource,
     ConstitutionValidity, InheritedConfigFacts, RuntimePostureSource, SetupState, SetupStep,
     StepEntry, StepStatus, UserConstitution, UserConstitutionLoad,
+    user_constitution::MAX_NOTES_LEN,
 };
 
 mod fleet_draft;
@@ -86,7 +87,7 @@ impl SetupWizardStep for StaticSetupStep {
     }
 }
 
-const STEP_SPECS: [StaticSetupStep; 8] = [
+const STEP_SPECS: [StaticSetupStep; 5] = [
     StaticSetupStep {
         id: SetupStep::Language,
         title_id: MessageId::SetupStepLanguageTitle,
@@ -104,24 +105,6 @@ const STEP_SPECS: [StaticSetupStep; 8] = [
         title_id: MessageId::SetupStepTrustSandboxTitle,
         why_id: MessageId::SetupStepTrustSandboxWhy,
         required: true,
-    },
-    StaticSetupStep {
-        id: SetupStep::ToolsMcp,
-        title_id: MessageId::SetupStepToolsMcpTitle,
-        why_id: MessageId::SetupStepToolsMcpWhy,
-        required: false,
-    },
-    StaticSetupStep {
-        id: SetupStep::Hotbar,
-        title_id: MessageId::SetupStepHotbarTitle,
-        why_id: MessageId::SetupStepHotbarWhy,
-        required: false,
-    },
-    StaticSetupStep {
-        id: SetupStep::RemoteRuntime,
-        title_id: MessageId::SetupStepRemoteRuntimeTitle,
-        why_id: MessageId::SetupStepRemoteRuntimeWhy,
-        required: false,
     },
     StaticSetupStep {
         id: SetupStep::Constitution,
@@ -144,6 +127,8 @@ pub struct SetupWizardView {
     locale: Locale,
     facts: SetupRuntimeFacts,
     guided_draft: GuidedConstitutionDraft,
+    freeform_note: String,
+    editing_freeform_note: bool,
     guided_preview_seen: bool,
     /// The keep-existing path mirrors the guided two-step: the first `K`
     /// opens the rendered preview of the existing file, the second completes
@@ -601,7 +586,30 @@ impl GuidedConstitutionDraft {
         true
     }
 
+    #[cfg(test)]
     fn to_constitution(self, locale: Locale) -> UserConstitution {
+        self.to_constitution_with_freeform(locale, None)
+    }
+
+    fn to_constitution_with_freeform(
+        self,
+        locale: Locale,
+        freeform_note: Option<&str>,
+    ) -> UserConstitution {
+        let mut notes = self.notes(locale);
+        if let Some(note) = freeform_note.map(str::trim).filter(|note| !note.is_empty()) {
+            let own_words = match locale {
+                Locale::ZhHans => format!(
+                    "\n用户自由原则：{}",
+                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                ),
+                _ => format!(
+                    "\nUser freeform principle: {}",
+                    bounded_freeform_note(note, MAX_NOTES_LEN)
+                ),
+            };
+            notes.push_str(&own_words);
+        }
         UserConstitution {
             language: Some(locale.tag().to_string()),
             about: Some(self.purpose.about(locale).to_string()),
@@ -617,7 +625,7 @@ impl GuidedConstitutionDraft {
                 self.privacy.escalation_rule(locale).to_string(),
             ],
             autonomy_preference: self.autonomy,
-            notes: Some(self.notes(locale)),
+            notes: Some(notes),
             ..UserConstitution::default()
         }
     }
@@ -1004,6 +1012,57 @@ fn authority_priority(locale: Locale) -> &'static str {
     }
 }
 
+fn bounded_freeform_note(input: &str, max_chars: usize) -> String {
+    input
+        .chars()
+        .filter_map(|ch| {
+            if ch == '\t' {
+                Some(' ')
+            } else if ch == '\n' || !ch.is_control() {
+                Some(ch)
+            } else {
+                None
+            }
+        })
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn compact_freeform_preview(note: &str) -> String {
+    let compact = note.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut preview = compact.chars().take(96).collect::<String>();
+    if compact.chars().count() > 96 {
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn freeform_note_line(locale: Locale, note: &str, editing: bool) -> Line<'static> {
+    let preview = compact_freeform_preview(note);
+    let text = match (locale, editing, preview.is_empty()) {
+        (Locale::ZhHans, true, true) => {
+            "F 自由原则：正在编辑 - 输入或粘贴有界原则，Enter 完成".to_string()
+        }
+        (Locale::ZhHans, true, false) => format!("F 自由原则：正在编辑 - {preview}"),
+        (Locale::ZhHans, false, true) => "F 自由原则：按 F 输入或粘贴自己的有界原则".to_string(),
+        (Locale::ZhHans, false, false) => format!("F 自由原则：{preview}"),
+        (_, true, true) => {
+            "F Own words: editing - type or paste a bounded principle, Enter to finish".to_string()
+        }
+        (_, true, false) => format!("F Own words: editing - {preview}"),
+        (_, false, true) => "F Own words: press F to type or paste a bounded principle".to_string(),
+        (_, false, false) => format!("F Own words: {preview}"),
+    };
+    let style = if editing || !preview.is_empty() {
+        Style::default().fg(palette::WHALE_ACCENT_PRIMARY)
+    } else {
+        Style::default().fg(palette::TEXT_MUTED)
+    };
+    Line::from(Span::styled(text, style))
+}
+
 impl SetupWizardView {
     #[cfg(test)]
     #[must_use]
@@ -1015,6 +1074,8 @@ impl SetupWizardView {
             locale,
             facts: SetupRuntimeFacts::default(),
             guided_draft: GuidedConstitutionDraft::default(),
+            freeform_note: String::new(),
+            editing_freeform_note: false,
             guided_preview_seen: false,
             existing_preview_seen: false,
             model_draft: None,
@@ -1066,6 +1127,8 @@ impl SetupWizardView {
             locale,
             facts,
             guided_draft: GuidedConstitutionDraft::default(),
+            freeform_note: String::new(),
+            editing_freeform_note: false,
             guided_preview_seen: false,
             existing_preview_seen: false,
             model_draft: None,
@@ -1083,10 +1146,12 @@ impl SetupWizardView {
     ) -> Self {
         Self {
             state,
-            selected: step_index(step),
+            selected: visible_step_index(step),
             locale,
             facts,
             guided_draft: GuidedConstitutionDraft::default(),
+            freeform_note: String::new(),
+            editing_freeform_note: false,
             guided_preview_seen: false,
             existing_preview_seen: false,
             model_draft: None,
@@ -1241,7 +1306,8 @@ impl SetupWizardView {
             // gate; ratify exactly what was previewed.
             Some(draft) => (draft.clone(), ConstitutionAuthoring::ModelDrafted),
             None => (
-                self.guided_draft.to_constitution(self.locale),
+                self.guided_draft
+                    .to_constitution_with_freeform(self.locale, self.freeform_note_for_draft()),
                 ConstitutionAuthoring::Guided,
             ),
         };
@@ -1295,7 +1361,8 @@ impl SetupWizardView {
                 ),
             ),
             None => (
-                self.guided_draft.to_constitution(self.locale),
+                self.guided_draft
+                    .to_constitution_with_freeform(self.locale, self.freeform_note_for_draft()),
                 DraftProvenance::Guided,
             ),
         };
@@ -1325,8 +1392,55 @@ impl SetupWizardView {
         }
         ViewAction::Emit(ViewEvent::SetupConstitutionModelDraftRequested {
             draft: self.guided_draft,
+            freeform_note: self.freeform_note_for_draft().map(str::to_string),
             locale: self.locale,
         })
+    }
+
+    fn toggle_freeform_edit(&mut self) -> ViewAction {
+        if self.selected_step() == SetupStep::Constitution {
+            self.editing_freeform_note = !self.editing_freeform_note;
+        }
+        ViewAction::None
+    }
+
+    fn freeform_note_for_draft(&self) -> Option<&str> {
+        let note = self.freeform_note.trim();
+        (!note.is_empty()).then_some(note)
+    }
+
+    fn append_freeform_note_text(&mut self, text: &str) {
+        let mut next = self.freeform_note.clone();
+        next.push_str(text);
+        self.freeform_note = bounded_freeform_note(&next, MAX_NOTES_LEN);
+        self.guided_preview_seen = false;
+        self.model_draft = None;
+        self.model_draft_label = None;
+    }
+
+    fn handle_freeform_note_key(&mut self, key: KeyEvent) -> Option<ViewAction> {
+        if self.selected_step() != SetupStep::Constitution || !self.editing_freeform_note {
+            return None;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                self.editing_freeform_note = false;
+                Some(ViewAction::None)
+            }
+            KeyCode::Backspace => {
+                self.freeform_note.pop();
+                self.guided_preview_seen = false;
+                self.model_draft = None;
+                self.model_draft_label = None;
+                Some(ViewAction::None)
+            }
+            KeyCode::Char(c) if key.modifiers.is_empty() => {
+                let mut buf = [0; 4];
+                self.append_freeform_note_text(c.encode_utf8(&mut buf));
+                Some(ViewAction::None)
+            }
+            _ => Some(ViewAction::None),
+        }
     }
 
     /// Install a model-drafted constitution (already sanitized + bounded by
@@ -1452,6 +1566,9 @@ impl ModalView for SetupWizardView {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
+        if let Some(action) = self.handle_freeform_note_key(key) {
+            return action;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => ViewAction::Close,
             KeyCode::Left | KeyCode::Char('b') => {
@@ -1509,6 +1626,9 @@ impl ModalView for SetupWizardView {
             KeyCode::Char('a') if self.selected_step() == SetupStep::Constitution => {
                 self.request_model_draft()
             }
+            KeyCode::Char('f') if self.selected_step() == SetupStep::Constitution => {
+                self.toggle_freeform_edit()
+            }
             KeyCode::Char('k') if self.selected_step() == SetupStep::Constitution => {
                 self.commit_keep_existing_constitution()
             }
@@ -1532,6 +1652,14 @@ impl ModalView for SetupWizardView {
             }
             _ => ViewAction::None,
         }
+    }
+
+    fn handle_paste(&mut self, text: &str) -> bool {
+        if self.selected_step() != SetupStep::Constitution {
+            return false;
+        }
+        self.append_freeform_note_text(text);
+        true
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -1588,6 +1716,10 @@ impl ModalView for SetupWizardView {
             hints.push(ActionHint::new(
                 "G",
                 tr(self.locale, MessageId::SetupActionGuided).to_string(),
+            ));
+            hints.push(ActionHint::new(
+                "F",
+                tr(self.locale, MessageId::SetupActionFreeform).to_string(),
             ));
             if self.facts.constitution_file == SetupConstitutionFileState::Loaded {
                 hints.push(ActionHint::new(
@@ -1785,6 +1917,7 @@ impl SetupWizardView {
                 MessageId::SetupConstitutionPrinciplesLabel,
                 self.guided_draft.principles.label(self.locale),
             ),
+            freeform_note_line(self.locale, &self.freeform_note, self.editing_freeform_note),
         ];
         if self.facts.constitution_file == SetupConstitutionFileState::Loaded {
             lines.push(Line::from(Span::styled(
@@ -2456,6 +2589,13 @@ fn step_index(step: SetupStep) -> usize {
         .expect("all setup-state steps should have wizard specs")
 }
 
+fn visible_step_index(step: SetupStep) -> usize {
+    STEP_SPECS
+        .iter()
+        .position(|spec| spec.id() == step)
+        .unwrap_or_else(|| step_index(SetupStep::Constitution))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2487,6 +2627,32 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         }
+    }
+
+    #[test]
+    fn visible_release_rail_skips_optional_placeholder_steps() {
+        let steps = STEP_SPECS.iter().map(|step| step.id()).collect::<Vec<_>>();
+
+        assert_eq!(
+            steps,
+            vec![
+                SetupStep::Language,
+                SetupStep::ProviderModel,
+                SetupStep::TrustSandbox,
+                SetupStep::Constitution,
+                SetupStep::Verification,
+            ]
+        );
+        assert_eq!(
+            SetupWizardView::new_at_with_facts(
+                SetupState::default(),
+                Locale::En,
+                SetupStep::ToolsMcp,
+                SetupRuntimeFacts::default(),
+            )
+            .selected_step(),
+            SetupStep::Constitution
+        );
     }
 
     #[test]
@@ -2749,6 +2915,46 @@ mod tests {
     }
 
     #[test]
+    fn freeform_note_previews_saves_and_stays_advisory() {
+        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+
+        let first_preview = view.handle_key(key(KeyCode::Char('g')));
+        assert!(matches!(
+            first_preview,
+            ViewAction::Emit(ViewEvent::OpenTextPager { .. })
+        ));
+        assert!(view.handle_paste(
+            "Prefer reversible demos; do not treat shell unrestricted as permission."
+        ));
+
+        let second_preview = view.handle_key(key(KeyCode::Char('g')));
+        let ViewAction::Emit(ViewEvent::OpenTextPager { content, .. }) = second_preview else {
+            panic!("freeform note should force a fresh preview");
+        };
+        assert!(content.contains("User freeform principle"));
+        assert!(content.contains("Prefer reversible demos"));
+        assert!(content.contains("do not change approval, sandbox, shell"));
+
+        let action = view.handle_key(key(KeyCode::Char('g')));
+        let ViewAction::EmitAndClose(ViewEvent::SetupConstitutionCommitRequested {
+            constitution,
+            state,
+            ..
+        }) = action
+        else {
+            panic!("expected guided constitution commit event");
+        };
+        let body = constitution.render_body();
+        assert!(body.contains("User freeform principle"));
+        assert!(body.contains("Prefer reversible demos"));
+        assert_eq!(
+            state.constitution_authoring,
+            Some(ConstitutionAuthoring::Guided)
+        );
+        assert_eq!(state.runtime_posture_source, RuntimePostureSource::Unset);
+    }
+
+    #[test]
     fn changing_guided_answer_requires_fresh_preview() {
         let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
 
@@ -2834,16 +3040,24 @@ mod tests {
             view.handle_key(key(KeyCode::Char('2'))),
             ViewAction::None
         ));
+        assert!(view.handle_paste("Prefer demos before durable rewrites."));
 
         let action = view.handle_key(key(KeyCode::Char('a')));
 
-        let ViewAction::Emit(ViewEvent::SetupConstitutionModelDraftRequested { draft, locale }) =
-            action
+        let ViewAction::Emit(ViewEvent::SetupConstitutionModelDraftRequested {
+            draft,
+            freeform_note,
+            locale,
+        }) = action
         else {
             panic!("expected model draft request event");
         };
         assert_eq!(locale, Locale::En);
         assert_eq!(draft.autonomy, AutonomyPreference::Autonomous);
+        assert_eq!(
+            freeform_note.as_deref(),
+            Some("Prefer demos before durable rewrites.")
+        );
         // The wizard stays open (Emit, not EmitAndClose) and nothing commits.
         assert_eq!(view.state().constitution_choice, ConstitutionChoice::Unset);
     }
@@ -2943,6 +3157,27 @@ mod tests {
             state.constitution_authoring,
             Some(ConstitutionAuthoring::Guided)
         );
+    }
+
+    #[test]
+    fn freeform_note_discards_the_model_draft() {
+        let mut view = SetupWizardView::new_at_with_facts(
+            SetupState::default(),
+            Locale::En,
+            SetupStep::Constitution,
+            ready_facts("GLM-5.2"),
+        );
+        let _ = view.install_model_draft(sample_model_draft(), "GLM-5.2".to_string());
+
+        assert!(view.handle_paste("Prefer local examples before broad rewrites."));
+
+        let action = view.handle_key(key(KeyCode::Char('g')));
+        let ViewAction::Emit(ViewEvent::OpenTextPager { content, .. }) = action else {
+            panic!("changed freeform note should force a fresh guided preview");
+        };
+        assert!(content.contains("Rendered deterministically"));
+        assert!(content.contains("Prefer local examples"));
+        assert!(!content.contains("Drafted by GLM-5.2"));
     }
 
     #[test]
@@ -3501,7 +3736,7 @@ mod tests {
             RuntimePostureSource::Confirmed
         );
         assert!(message.contains("Runtime posture reviewed"));
-        assert_eq!(view.selected_step(), SetupStep::ToolsMcp);
+        assert_eq!(view.selected_step(), SetupStep::Constitution);
     }
 
     #[test]
@@ -3583,7 +3818,7 @@ mod tests {
         assert_eq!(entry.result.as_deref(), Some("skipped by user"));
         assert_eq!(state.runtime_posture_source, RuntimePostureSource::Unset);
         assert!(message.contains("skipped"));
-        assert_eq!(view.selected_step(), SetupStep::ToolsMcp);
+        assert_eq!(view.selected_step(), SetupStep::Constitution);
     }
 
     #[test]
@@ -3706,7 +3941,7 @@ mod tests {
                 })
         );
         assert!(message.contains("Runtime preset applied"));
-        assert_eq!(view.selected_step(), SetupStep::ToolsMcp);
+        assert_eq!(view.selected_step(), SetupStep::Constitution);
     }
 
     #[test]

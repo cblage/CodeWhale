@@ -637,14 +637,15 @@ pub enum ViewEvent {
     },
     /// Emitted by the setup Constitution card (`A`, provider route ready) to
     /// ask the user's first configured model to draft the constitution from
-    /// the guided answers. The host performs the one-shot call, pushes the
-    /// sanitized/bounded draft back into the wizard, and opens the
+    /// the guided answers plus an optional bounded own-words note. The host
+    /// performs the one-shot call, pushes the sanitized/bounded draft back into the wizard, and opens the
     /// ratification preview; on any failure it reports why and leaves the
     /// deterministic guided draft standing. Nothing is persisted by this
     /// event — saving still goes through the ratify keypress and
     /// [`SetupConstitutionCommitRequested`](Self::SetupConstitutionCommitRequested).
     SetupConstitutionModelDraftRequested {
         draft: crate::tui::setup::GuidedConstitutionDraft,
+        freeform_note: Option<String>,
         locale: crate::localization::Locale,
     },
     /// Emitted by the fleet setup Review step (`m`) to ask the configured

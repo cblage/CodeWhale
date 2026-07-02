@@ -304,6 +304,7 @@
     "SetupActionGuided": "preview/ratify",
     "SetupActionTuneGuided": "tune",
     "SetupActionModelDraft": "model draft",
+    "SetupActionFreeform": "own words",
     "SetupActionKeepExisting": "keep existing",
     "SetupActionProvider": "provider setup",
     "SetupActionModel": "model routes",

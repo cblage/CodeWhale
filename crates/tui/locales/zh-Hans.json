@@ -294,6 +294,7 @@
   "SetupActionGuided": "预览/批准",
   "SetupActionTuneGuided": "调整",
   "SetupActionModelDraft": "模型起草",
+  "SetupActionFreeform": "自由原则",
   "SetupActionKeepExisting": "保留现有",
   "SetupActionProvider": "配置提供商",
   "SetupActionModel": "模型路线",
