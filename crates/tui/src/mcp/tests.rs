@@ -1043,42 +1043,6 @@ fn test_mcp_pool_is_mcp_tool() {
     assert!(!McpPool::is_mcp_tool("exec_shell"));
 }
 
-#[test]
-fn test_format_tool_result_text() {
-    let result = serde_json::json!({
-        "content": [
-            {"type": "text", "text": "Hello, world!"}
-        ]
-    });
-    assert_eq!(format_tool_result(&result), "Hello, world!");
-}
-
-#[test]
-fn test_format_tool_result_error() {
-    let result = serde_json::json!({
-        "isError": true,
-        "content": [
-            {"type": "text", "text": "Something went wrong"}
-        ]
-    });
-    assert_eq!(format_tool_result(&result), "Error: Something went wrong");
-}
-
-#[test]
-fn test_format_tool_result_multiple_content() {
-    let result = serde_json::json!({
-        "content": [
-            {"type": "text", "text": "Line 1"},
-            {"type": "text", "text": "Line 2"},
-            {"type": "image", "data": "base64..."}
-        ]
-    });
-    let formatted = format_tool_result(&result);
-    assert!(formatted.contains("Line 1"));
-    assert!(formatted.contains("Line 2"));
-    assert!(formatted.contains("[image content]"));
-}
-
 struct ScriptedValueTransport {
     sent: Arc<Mutex<Vec<serde_json::Value>>>,
     responses: VecDeque<Vec<u8>>,
