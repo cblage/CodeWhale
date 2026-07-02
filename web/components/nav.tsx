@@ -1,5 +1,8 @@
 import Link from "next/link";
 import type { Locale } from "@/lib/i18n/config";
+import { FACTS } from "@/lib/facts.generated";
+import { fetchRepoStats, formatStars } from "@/lib/github";
+import { getEnv } from "@/lib/kv";
 import { Seal } from "./seal";
 import { Whale } from "./whale";
 import { LocaleSwitcher } from "./locale-switcher";
@@ -8,29 +11,31 @@ import { NavLinks } from "./nav-links";
 
 const EN_LINKS = [
   { href: "/en/install", label: "Install", cn: "安装" },
-  { href: "/en/runtime", label: "Runtime", cn: "集成" },
   { href: "/en/docs", label: "Docs", cn: "文档" },
-  { href: "/en/feed", label: "Activity", cn: "动态" },
-  { href: "/en/digest", label: "Community Digest", cn: "社区摘要" },
-  { href: "/en/roadmap", label: "Roadmap", cn: "路线" },
+  { href: "/en/feed", label: "Community", cn: "社区" },
   { href: "/en/faq", label: "FAQ", cn: "问答" },
-  { href: "/en/contribute", label: "Contribute", cn: "参与" },
 ];
 
 const ZH_LINKS = [
   { href: "/zh/install", label: "安装", cn: "" },
-  { href: "/zh/runtime", label: "集成", cn: "" },
   { href: "/zh/docs", label: "文档", cn: "" },
-  { href: "/zh/feed", label: "动态", cn: "" },
-  { href: "/zh/digest", label: "社区摘要", cn: "" },
-  { href: "/zh/roadmap", label: "路线图", cn: "" },
+  { href: "/zh/feed", label: "社区", cn: "" },
   { href: "/zh/faq", label: "常见问题", cn: "" },
-  { href: "/zh/contribute", label: "参与贡献", cn: "" },
 ];
 
-export function Nav({ locale = "en" }: { locale?: Locale }) {
+export async function Nav({ locale = "en" }: { locale?: Locale }) {
   const isZh = locale === "zh";
   const links = isZh ? ZH_LINKS : EN_LINKS;
+
+  // Live star count — cached by fetchRepoStats (next.revalidate). Falls back
+  // to a plain "GitHub" label when the API is unreachable at build time.
+  let stars = 0;
+  try {
+    const env = await getEnv();
+    stars = (await fetchRepoStats(env.GITHUB_TOKEN)).stars;
+  } catch {
+    /* keep fallback label */
+  }
 
   return (
     <header className="hairline-b bg-paper/85 backdrop-blur sticky top-0 z-30">
@@ -43,7 +48,7 @@ export function Nav({ locale = "en" }: { locale?: Locale }) {
           </div>
           <div className="flex items-center gap-4">
             <span className="hidden md:inline">codewhale.net</span>
-            <span className="tabular">v0.8.x</span>
+            <span className="tabular">{FACTS.version ? `v${FACTS.version}` : "v0.8.x"}</span>
           </div>
         </div>
       </div>
@@ -70,8 +75,9 @@ export function Nav({ locale = "en" }: { locale?: Locale }) {
           <Link
             href="https://github.com/Hmbown/CodeWhale"
             className="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 hairline-t hairline-b hairline-l hairline-r font-mono text-[0.7rem] uppercase tracking-wider hover:bg-paper-deep transition-colors"
+            aria-label={isZh ? "GitHub 星标数" : "GitHub stars"}
           >
-            <span>★ GitHub</span>
+            <span>★ {stars > 0 ? formatStars(stars) : "GitHub"}</span>
           </Link>
           <Link
             href={isZh ? "/zh/install" : "/en/install"}

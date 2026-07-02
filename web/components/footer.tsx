@@ -9,6 +9,7 @@ const EN_COLS = [
     items: [
       { label: "Install", href: "/en/install" },
       { label: "Documentation", href: "/en/docs" },
+      { label: "Runtime", href: "/en/runtime" },
       { label: "Roadmap", href: "/en/roadmap" },
       { label: "FAQ", href: "/en/faq" },
       { label: "Releases", href: "https://github.com/Hmbown/CodeWhale/releases" },
@@ -21,6 +22,7 @@ const EN_COLS = [
       { label: "Issues", href: "https://github.com/Hmbown/CodeWhale/issues" },
       { label: "Pull Requests", href: "https://github.com/Hmbown/CodeWhale/pulls" },
       { label: "Discussions", href: "https://github.com/Hmbown/CodeWhale/discussions" },
+      { label: "Community Digest", href: "/en/digest" },
       { label: "Contribute", href: "/en/contribute" },
       { label: "Sponsor CodeWhale", href: "https://github.com/sponsors/Hmbown" },
     ],
@@ -45,6 +47,7 @@ const ZH_COLS = [
     items: [
       { label: "安装指南", href: "/zh/install" },
       { label: "使用文档", href: "/zh/docs" },
+      { label: "集成", href: "/zh/runtime" },
       { label: "路线图", href: "/zh/roadmap" },
       { label: "常见问题", href: "/zh/faq" },
       { label: "版本发布", href: "https://github.com/Hmbown/CodeWhale/releases" },
@@ -56,6 +59,7 @@ const ZH_COLS = [
       { label: "议题", href: "https://github.com/Hmbown/CodeWhale/issues" },
       { label: "合并请求", href: "https://github.com/Hmbown/CodeWhale/pulls" },
       { label: "讨论区", href: "https://github.com/Hmbown/CodeWhale/discussions" },
+      { label: "社区摘要", href: "/zh/digest" },
       { label: "参与贡献", href: "/zh/contribute" },
       { label: "支持 CodeWhale", href: "https://github.com/sponsors/Hmbown" },
     ],
