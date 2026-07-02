@@ -1,10 +1,12 @@
 import Link from "next/link";
-import { fetchFeed, fetchRepoStats } from "@/lib/github";
+import { fetchFeed, fetchRepoStats, formatStars } from "@/lib/github";
 import { getDispatch, getEnv } from "@/lib/kv";
 import { getFacts } from "@/lib/facts";
 import { Ticker } from "@/components/ticker";
 import { StatGrid } from "@/components/stat-grid";
 import { Seal } from "@/components/seal";
+import { InstallCodeBlock } from "@/components/install-code-block";
+import { TerminalPlayer } from "@/components/terminal-player";
 import type { CuratedDispatch, FeedItem, RepoStats } from "@/lib/types";
 
 export const revalidate = 1800;
@@ -76,50 +78,28 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
 
   return (
     <>
-      <Ticker items={feed} />
-
-      {/* HERO — what it is, plainly */}
+      {/* HERO — the claim, with the proof beside it */}
       <section className="relative">
-        <div className="mx-auto max-w-[1400px] px-4 sm:px-6 pt-10 sm:pt-14 pb-12 grid lg:grid-cols-12 gap-10">
+        <div className="mx-auto max-w-[1400px] px-4 sm:px-6 pt-10 sm:pt-14 pb-12 grid lg:grid-cols-12 gap-10 lg:items-start">
           <div className="lg:col-span-7">
             <div className="mb-6">
-              <span className="pill pill-hot">{isZh ? "开源 · 多模型 · 本地运行" : "Open source · multi-model · runs locally"}</span>
+              <span className="pill pill-hot">{isZh ? "开源 · 任意模型 · 运行在你的终端" : "Open source · Any model · Runs in your terminal"}</span>
             </div>
 
             <h1 className="font-display tracking-crisp">
               {isZh
-                ? "把最好的模型，带给尽可能多的人。"
-                : "The best available models, for as many people as possible."}
+                ? "编码智能体运行在代码之上。CodeWhale 还运行在法典之上。"
+                : "Coding agents run on code. CodeWhale also runs on law."}
             </h1>
 
             <p className="mt-6 text-lg text-ink-soft leading-relaxed max-w-2xl">
               <span className="font-cjk text-indigo font-semibold">CodeWhale</span>
               {isZh
-                ? " 是一个开源的终端编程智能体（TUI + CLI）。你指向一个模型和一个项目，它就开始干活：读代码、改文件、跑命令、查结果、规划多步任务，并在出错时自我修正。它真正具备 agentic 能力——系统提示就是为此设计的，带计划的长时间任务是常态。目标很朴素：让本地终端工作流持续跟上编码智能体的研究和实用能力。"
-                : " is an open source terminal coding agent — a TUI and a CLI. Point it at a model and a project and it gets to work: reading code, making edits, running commands, checking results, planning multi-step tasks, and correcting itself when something fails. It's genuinely agentic — the system prompt is built for it, and long-running tasks with a real plan are the norm. The goal is simple: keep the local terminal workflow current with practical coding-agent research and capabilities."}
+                ? " 是一个开源的终端编程智能体——一个 TUI，一个 CLI——适配任意模型，DeepSeek 与开放权重模型享有一级支持。指令总在堆积、彼此冲突：过时的规格、陈旧的交接、你此刻的要求、刚跑出的测试结果。多数智能体靠猜来化解；CodeWhale 靠位阶来裁决——一部嵌套的宪法：内置的基础法、你的常备规则、仓库自己的法。由执行框架强制生效，换掉模型也不失效。"
+                : " is an open-source terminal coding agent — a TUI and a CLI — for any model, with DeepSeek and open weights first-class. Instructions pile up and conflict: the old spec, a stale handoff, your request, fresh test output. Most agents resolve that by guess. CodeWhale resolves it by rank — a nested constitution: bundled base law, your standing rules, your repo's own law. Enforced in the harness, intact when you swap models."}
             </p>
 
-            {/* HONEST STATUS — what's working right now, and what isn't */}
-            <div className="mt-6 px-4 py-3 hairline-t hairline-b hairline-l hairline-r text-sm leading-relaxed max-w-2xl space-y-1.5">
-              <div className="eyebrow mb-1.5">{isZh ? "当前状态" : "Where things stand"}</div>
-              {isZh ? (
-                <>
-                  <div><span className="text-jade font-mono text-xs mr-2">✓</span>当前推荐：<span className="font-mono">GLM 5.2</span>，<span className="font-mono">high</span> reasoning，在 CodeWhale 里表现很好。</div>
-                  <div><span className="text-jade font-mono text-xs mr-2">✓</span>OpenAI Codex 登录可用。</div>
-                  <div><span className="text-ink-mute font-mono text-xs mr-2">✗</span>Kimi OAuth 暂时不可用，正在修。</div>
-                  <div className="pt-1 text-xs text-ink-mute">没看到你想要的模型或端点？<a href="https://github.com/Hmbown/CodeWhale/issues/new" className="text-indigo hover:underline">开个 issue</a>。</div>
-                </>
-              ) : (
-                <>
-                  <div><span className="text-jade font-mono text-xs mr-2">✓</span>Recommended right now: <span className="font-mono">GLM 5.2</span> on <span className="font-mono">high</span> reasoning — working very well in CodeWhale.</div>
-                  <div><span className="text-jade font-mono text-xs mr-2">✓</span>OpenAI Codex login is working.</div>
-                  <div><span className="text-ink-mute font-mono text-xs mr-2">✗</span>Kimi OAuth is temporarily broken; on the list.</div>
-                  <div className="pt-1 text-xs text-ink-mute">Don&apos;t see a model or endpoint you want? <a href="https://github.com/Hmbown/CodeWhale/issues/new" className="text-indigo hover:underline">Open an issue</a>.</div>
-                </>
-              )}
-            </div>
-
-            <div className="mt-6 flex flex-wrap items-stretch sm:items-center gap-3">
+            <div className="mt-7 flex flex-wrap items-stretch sm:items-center gap-3">
               <Link
                 href={isZh ? "/zh/install" : "/install"}
                 className="flex-1 sm:flex-none text-center px-5 py-3 bg-ink text-paper font-mono text-sm uppercase tracking-wider hover:bg-indigo transition-colors"
@@ -127,62 +107,61 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                 {isZh ? "安装 →" : "Install →"}
               </Link>
               <Link
-                href={isZh ? "/zh/docs" : "/docs"}
+                href={isZh ? "/zh/docs/constitution" : "/docs/constitution"}
                 className="flex-1 sm:flex-none text-center px-5 py-3 hairline-t hairline-b hairline-l hairline-r font-mono text-sm uppercase tracking-wider hover:bg-paper-deep transition-colors"
               >
-                {isZh ? "文档 →" : "Docs →"}
+                {isZh ? "阅读宪法 →" : "Read the constitution →"}
               </Link>
               <Link
                 href="https://github.com/Hmbown/CodeWhale"
                 className="px-5 py-3 font-mono text-sm uppercase tracking-wider text-ink-mute hover:text-indigo transition-colors"
+                aria-label={isZh ? "GitHub 星标" : "GitHub stars"}
               >
-                ★ GitHub
+                ★ {stats.stars > 0 ? `${formatStars(stats.stars)} · GitHub` : "GitHub"}
               </Link>
+            </div>
+
+            <div className="mt-7 max-w-xl">
+              <div className="eyebrow mb-2">{isZh ? "一行安装" : "one-line install"}</div>
+              <InstallCodeBlock
+                cmd="npm install -g codewhale"
+                copyLabel={isZh ? "复制" : "Copy"}
+                copiedLabel={isZh ? "已复制 ✓" : "Copied ✓"}
+              />
+              <div className="mt-2 flex items-center justify-between gap-3 text-[0.7rem] font-mono text-ink-mute flex-wrap">
+                <span>{isZh ? "需要 Node 18+，无需 Rust 工具链" : "needs Node 18+ — no Rust toolchain"}</span>
+                <Link href={isZh ? "/zh/install" : "/install"} className="text-indigo hover:underline">
+                  {isZh ? "其他方式（Cargo / Homebrew / 国内镜像）→" : "other ways (Cargo / Homebrew / mirrors) →"}
+                </Link>
+              </div>
             </div>
 
             <div className="mt-6 flex items-center gap-4 text-xs font-mono text-ink-mute flex-wrap">
               <span>{isZh ? "由 Hmbown 维护" : "Maintained by Hmbown"}</span>
               <span className="hidden sm:inline">·</span>
-              <span>{facts.version ?? "v0.8.x"}</span>
+              <span>{facts.version ? `v${facts.version}` : "v0.8.x"}</span>
               <span className="hidden sm:inline">·</span>
               <span>{facts.providers.length} {isZh ? "个提供商" : "providers"}</span>
+              <span className="hidden sm:inline">·</span>
+              <span>{facts.license ?? "MIT"}</span>
             </div>
           </div>
 
+          {/* SEE HOW IT DECIDES — real traces, typed into a terminal pane */}
           <div className="lg:col-span-5">
-            <div className="hairline-t hairline-b hairline-l hairline-r bg-paper p-5 relative">
-              <div className="absolute -top-3 left-4 bg-paper px-2 eyebrow">
-                {isZh ? "一行安装" : "one-line install"}
-              </div>
-              <pre className="code-block mt-2">
-                {isZh ? (
-                  <>
-                    <span className="comment"># npm（推荐，无需 Rust 工具链）</span>{"\n"}
-                    <span className="prompt">$</span> npm install -g codewhale{"\n"}
-                    <span className="prompt">$</span> codewhale{"\n"}
-                    <br />
-                    <span className="comment"># 其他方式（Cargo / Homebrew / 直接下载 / 国内镜像）：</span>{"\n"}
-                    <span className="comment"># <span className="key">/install</span></span>
-                  </>
-                ) : (
-                  <>
-                    <span className="comment"># npm — no Rust toolchain required</span>{"\n"}
-                    <span className="prompt">$</span> npm install -g codewhale{"\n"}
-                    <span className="prompt">$</span> codewhale{"\n"}
-                    <br />
-                    <span className="comment"># other ways (Cargo / Homebrew / direct download / China mirrors):</span>{"\n"}
-                    <span className="comment"># <span className="key">/install</span></span>
-                  </>
-                )}
-              </pre>
-              <div className="mt-3 flex items-center justify-between text-[0.7rem] font-mono text-ink-mute">
-                <span>{isZh ? "需要 Node 或 Rust 1.88+" : "needs Node or Rust 1.88+"}</span>
-                <Link href={isZh ? "/zh/install" : "/install"} className="text-indigo hover:underline">{isZh ? "其他方式 →" : "other ways →"}</Link>
-              </div>
-            </div>
+            <div className="eyebrow mb-3">{isZh ? "看它如何裁决" : "See how it decides"}</div>
+            <TerminalPlayer locale={locale} />
+            <p className="mt-3 text-xs text-ink-mute leading-relaxed">
+              {isZh
+                ? "摘自真实会话的忠实片段——宪法可以在模型的推理里被直接观察到，而不是落地页上的一句宣称。"
+                : "Faithful excerpts from a real session — the constitution is observable in the model's reasoning, not a claim on a landing page."}
+            </p>
           </div>
         </div>
       </section>
+
+      {/* live repo activity — below the hero, above the numbers */}
+      <Ticker items={feed} />
 
       <StatGrid stats={stats} />
 
@@ -222,6 +201,26 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               <span className="font-mono text-[0.7rem] uppercase tracking-widest text-indigo">{item.cta}</span>
             </Link>
           ))}
+        </div>
+
+        {/* HONEST STATUS — what's working right now, and what isn't */}
+        <div className="mt-10 px-4 py-3 hairline-t hairline-b hairline-l hairline-r text-sm leading-relaxed max-w-2xl space-y-1.5">
+          <div className="eyebrow mb-1.5">{isZh ? "当前状态" : "Where things stand"}</div>
+          {isZh ? (
+            <>
+              <div><span className="text-jade font-mono text-xs mr-2">✓</span>当前推荐：<span className="font-mono">GLM 5.2</span>，<span className="font-mono">high</span> reasoning，在 CodeWhale 里表现很好。</div>
+              <div><span className="text-jade font-mono text-xs mr-2">✓</span>OpenAI Codex 登录可用。</div>
+              <div><span className="text-ink-mute font-mono text-xs mr-2">✗</span>Kimi OAuth 暂时不可用，正在修。</div>
+              <div className="pt-1 text-xs text-ink-mute">没看到你想要的模型或端点？<a href="https://github.com/Hmbown/CodeWhale/issues/new" className="text-indigo hover:underline">开个 issue</a>。</div>
+            </>
+          ) : (
+            <>
+              <div><span className="text-jade font-mono text-xs mr-2">✓</span>Recommended right now: <span className="font-mono">GLM 5.2</span> on <span className="font-mono">high</span> reasoning — working very well in CodeWhale.</div>
+              <div><span className="text-jade font-mono text-xs mr-2">✓</span>OpenAI Codex login is working.</div>
+              <div><span className="text-ink-mute font-mono text-xs mr-2">✗</span>Kimi OAuth is temporarily broken; on the list.</div>
+              <div className="pt-1 text-xs text-ink-mute">Don&apos;t see a model or endpoint you want? <a href="https://github.com/Hmbown/CodeWhale/issues/new" className="text-indigo hover:underline">Open an issue</a>.</div>
+            </>
+          )}
         </div>
       </section>
 
