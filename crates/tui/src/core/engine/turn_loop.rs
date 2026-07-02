@@ -2941,7 +2941,19 @@ pub(super) fn command_allows_tool(allowed_tools: Option<&[String]>, tool_name: &
     let Some(allowed_tools) = allowed_tools else {
         return true;
     };
-    allowed_tools.contains(&tool_name.to_ascii_lowercase())
+    // Symmetric with `command_denies_tool`: support a trailing `*` wildcard
+    // and lowercase both sides, so `allowed_tools = ["mcp_*"]` or `["ReadFile"]`
+    // work instead of silently matching nothing (which strips the whole
+    // catalog).
+    let tool_name = tool_name.to_ascii_lowercase();
+    allowed_tools.iter().any(|rule| {
+        let rule = rule.to_ascii_lowercase();
+        if let Some(prefix) = rule.strip_suffix('*') {
+            tool_name.starts_with(prefix)
+        } else {
+            tool_name == rule
+        }
+    })
 }
 
 /// Folded outcome of all `tool_call_before` hook results for one tool call
@@ -3395,6 +3407,16 @@ mod tests {
     fn review_regression_allowed_tools_gate_blocks_all_tools_when_empty() {
         let allowed = Vec::new();
         assert!(!command_allows_tool(Some(&allowed), "bash"));
+    }
+
+    #[test]
+    fn allowed_tools_gate_supports_wildcard_and_case() {
+        // Symmetric with the deny list: `mcp_*` and mixed-case rules match.
+        let allowed = vec!["mcp_*".to_string(), "ReadFile".to_string()];
+        assert!(command_allows_tool(Some(&allowed), "mcp_slack_send"));
+        assert!(command_allows_tool(Some(&allowed), "readfile"));
+        assert!(command_allows_tool(Some(&allowed), "ReadFile"));
+        assert!(!command_allows_tool(Some(&allowed), "exec_shell"));
     }
 
     #[test]

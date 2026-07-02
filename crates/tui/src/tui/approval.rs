@@ -557,7 +557,25 @@ pub fn classify_risk(tool_name: &str, category: ToolCategory, params: &Value) ->
         // Query-only network is benign; opening a URL pulls arbitrary
         // remote content, so it stays destructive.
         ToolCategory::Network => match tool_name {
-            "web_search" | "web_run" | "wait_for_dev_server" => RiskLevel::Benign,
+            "web_search" | "wait_for_dev_server" => RiskLevel::Benign,
+            // web_run is benign for search/query, but its `open`/`click`
+            // actions fetch model-supplied URLs (arbitrary remote content) —
+            // destructive, consistent with fetch_url.
+            "web_run" => {
+                let fetches_url = params
+                    .get("open")
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| !a.is_empty())
+                    || params
+                        .get("click")
+                        .and_then(Value::as_array)
+                        .is_some_and(|a| !a.is_empty());
+                if fetches_url {
+                    RiskLevel::Destructive
+                } else {
+                    RiskLevel::Benign
+                }
+            }
             _ => RiskLevel::Destructive,
         },
         // Shell stays destructive unless the existing command-safety analyzer
@@ -3075,6 +3093,31 @@ diff --git a/src/b.rs b/src/b.rs
                 "missing key badge {badge}:\n{joined}"
             );
         }
+    }
+
+    #[test]
+    fn web_run_risk_is_param_aware() {
+        // search/query is benign; open/click fetch arbitrary URLs -> destructive.
+        assert_eq!(
+            classify_risk("web_run", ToolCategory::Network, &json!({"search": "rust"})),
+            RiskLevel::Benign
+        );
+        assert_eq!(
+            classify_risk(
+                "web_run",
+                ToolCategory::Network,
+                &json!({"open": [{"ref": "https://evil.example"}]})
+            ),
+            RiskLevel::Destructive
+        );
+        assert_eq!(
+            classify_risk(
+                "web_run",
+                ToolCategory::Network,
+                &json!({"click": [{"ref": "1"}]})
+            ),
+            RiskLevel::Destructive
+        );
     }
 
     #[test]
