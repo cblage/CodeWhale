@@ -1564,9 +1564,9 @@ impl EnvGuard {
 }
 
 #[test]
-fn max_subagents_defaults_to_twenty() {
+fn max_subagents_defaults_to_default_limit() {
     assert_eq!(Config::default().max_subagents(), DEFAULT_MAX_SUBAGENTS);
-    assert_eq!(DEFAULT_MAX_SUBAGENTS, 20);
+    assert_eq!(DEFAULT_MAX_SUBAGENTS, 64);
 }
 
 #[test]
@@ -1584,6 +1584,12 @@ fn launch_concurrency_defaults_and_clamps_to_max_subagents() {
         }),
         ..Config::default()
     };
+    assert_eq!(config.launch_concurrency(), 50);
+
+    config.subagents = Some(SubagentsConfig {
+        launch_concurrency: Some(DEFAULT_MAX_SUBAGENTS + 10),
+        ..SubagentsConfig::default()
+    });
     assert_eq!(config.launch_concurrency(), config.max_subagents());
 
     config.subagents = Some(SubagentsConfig {
@@ -1826,17 +1832,14 @@ enabled = false
     )
     .expect("parse inherited provider subagent profile");
 
-    assert_eq!(
-        config.max_subagents_for_provider(ApiProvider::Deepseek),
-        MAX_SUBAGENTS
-    );
+    assert_eq!(config.max_subagents_for_provider(ApiProvider::Deepseek), 30);
     assert_eq!(
         config.launch_concurrency_for_provider(ApiProvider::Deepseek),
-        MAX_SUBAGENTS
+        30
     );
     assert_eq!(
         config.max_admitted_subagents_for_provider(ApiProvider::Deepseek),
-        MAX_SUBAGENTS
+        30
     );
     assert_eq!(
         config.subagent_max_spawn_depth_for_provider(ApiProvider::Deepseek),
@@ -4320,6 +4323,8 @@ fn openai_codex_default_model_falls_back_to_codex_model() {
 
 #[test]
 fn direct_provider_ignores_foreign_deepseek_root_default_model() {
+    let _lock = lock_test_env();
+
     let config = Config {
         provider: Some("zai".to_string()),
         default_text_model: Some(DEFAULT_TEXT_MODEL.to_string()),

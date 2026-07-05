@@ -4899,8 +4899,8 @@ fn external_prompt_wording_never_changes_effective_mode_or_authority() {
 }
 
 #[test]
-fn external_write_instruction_supersedes_prior_review_only_policy() {
-    let review_only = effective_input_policy(
+fn external_user_wording_does_not_downgrade_standing_authority() {
+    let review_wording = effective_input_policy(
         UserInputProvenance::ExternalUser,
         AppMode::Yolo,
         "你在帮我看看 外卖部分还哪里没有使用多语言 我看看要不要加",
@@ -4909,14 +4909,17 @@ fn external_write_instruction_supersedes_prior_review_only_policy() {
         true,
         crate::tui::approval::ApprovalMode::Bypass,
     );
-    assert_eq!(review_only.mode, AppMode::Plan);
-    assert!(!review_only.trust_mode);
-    assert!(!review_only.auto_approve);
+    assert_eq!(review_wording.mode, AppMode::Yolo);
+    assert!(review_wording.allow_shell);
+    assert!(review_wording.trust_mode);
+    assert!(review_wording.auto_approve);
+    assert_eq!(
+        review_wording.approval_mode,
+        crate::tui::approval::ApprovalMode::Bypass
+    );
     assert!(
-        review_only
-            .status
-            .as_deref()
-            .is_some_and(|status| { status.contains("read-only Plan tools") })
+        review_wording.status.is_none(),
+        "external user wording must not content-downgrade standing authority"
     );
 
     let later_user_instruction = effective_input_policy(

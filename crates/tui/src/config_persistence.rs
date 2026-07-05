@@ -140,7 +140,7 @@ pub(crate) fn unset_document_value(
 /// tables, inline tables, and arrays of tables. Used by `/logout` to strip
 /// `api_key` everywhere without disturbing keys like `api_key_env`.
 pub(crate) fn remove_document_key_recursive(table: &mut dyn toml_edit::TableLike, key: &str) {
-    table.remove(key);
+    remove_key_preserving_leading_decor(table, key);
     for (_, item) in table.iter_mut() {
         if let toml_edit::Item::ArrayOfTables(tables) = item {
             for nested in tables.iter_mut() {
@@ -150,6 +150,58 @@ pub(crate) fn remove_document_key_recursive(table: &mut dyn toml_edit::TableLike
             remove_document_key_recursive(nested, key);
         }
     }
+}
+
+fn remove_key_preserving_leading_decor(table: &mut dyn toml_edit::TableLike, key: &str) {
+    let mut found = false;
+    let next_key = table.iter().find_map(|(candidate, _)| {
+        if found {
+            Some(candidate.to_owned())
+        } else {
+            found = candidate == key;
+            None
+        }
+    });
+    let leading_prefix = leading_prefix_for_key(table, key);
+    if table.remove(key).is_none() {
+        return;
+    }
+    let Some(prefix) = leading_prefix else {
+        return;
+    };
+    let Some(next_key) = next_key else {
+        return;
+    };
+    if prefix.as_str() == Some("") {
+        return;
+    }
+    if let Some(mut next_key_decor) = table.key_mut(&next_key)
+        && decor_prefix_is_empty(next_key_decor.leaf_decor())
+    {
+        next_key_decor.leaf_decor_mut().set_prefix(prefix);
+    }
+}
+
+fn decor_prefix_is_empty(decor: &toml_edit::Decor) -> bool {
+    match decor.prefix() {
+        Some(prefix) => prefix.as_str() == Some(""),
+        None => true,
+    }
+}
+
+fn leading_prefix_for_key(
+    table: &dyn toml_edit::TableLike,
+    key: &str,
+) -> Option<toml_edit::RawString> {
+    table
+        .key(key)
+        .and_then(|key| key.leaf_decor().prefix().cloned())
+        .or_else(|| {
+            table
+                .get(key)
+                .and_then(|item| item.as_value())
+                .and_then(|value| value.decor().prefix().cloned())
+        })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1194,7 +1246,8 @@ action = "mode.plan"
 
     #[test]
     fn remove_document_key_recursive_strips_nested_and_quoted_tables() {
-        let mut doc = r#"api_key = "root"
+        let mut doc = r#"# root note
+api_key = "root"
 api_key_env = "KEEP_ENV"
 
 [providers.openrouter]
@@ -1214,6 +1267,7 @@ slot = 1
 
         let body = doc.to_string();
         assert!(!body.contains("api_key = "), "{body}");
+        assert!(body.contains("# root note"), "{body}");
         assert!(body.contains("api_key_env = \"KEEP_ENV\""), "{body}");
         assert!(body.contains("base_url"), "{body}");
         assert!(body.contains("[[hotbar]]"), "{body}");
