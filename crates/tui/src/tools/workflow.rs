@@ -10,6 +10,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use codewhale_whaleflow::{
+    AgentType, BranchSpec, BudgetSpec, IsolationMode, LeafSpec, ReduceSpec, SequenceSpec, TaskMode,
+    WorkflowNode, WorkflowSpec, compile_javascript_workflow, compile_typescript_workflow,
+};
 use codewhale_whaleflow_js::{
     BudgetSnapshot, DriverError, ProgressEvent, SpawnedTask, TaskCompletion, TaskRequest,
     WhaleflowVm, WorkflowDriver,
@@ -389,9 +393,7 @@ fn workflow_source(input: &Value, context: &ToolContext) -> Result<WorkflowSourc
         .map(str::to_string);
     let source_path = optional_str(input, "source_path").or_else(|| optional_str(input, "path"));
     match (script, source_path) {
-        (Some(source), None) if !source.trim().is_empty() => {
-            Ok(WorkflowSource { source, path: None })
-        }
+        (Some(source), None) if !source.trim().is_empty() => workflow_source_from_raw(source, None),
         (None, Some(path)) => read_workflow_source_path(path, context),
         (Some(_), Some(_)) => Err(ToolError::invalid_input(
             "Use either script or source_path, not both",
@@ -433,10 +435,400 @@ fn read_workflow_source_path(
             canonical.display()
         ))
     })?;
-    Ok(WorkflowSource {
-        source,
-        path: Some(canonical),
-    })
+    workflow_source_from_raw(source, Some(canonical))
+}
+
+fn workflow_source_from_raw(
+    source: String,
+    path: Option<PathBuf>,
+) -> Result<WorkflowSource, ToolError> {
+    let source = adapt_workflow_source(&source, path.as_deref())?;
+    Ok(WorkflowSource { source, path })
+}
+
+fn adapt_workflow_source(source: &str, path: Option<&Path>) -> Result<String, ToolError> {
+    if !looks_like_declarative_workflow(source) {
+        return Ok(source.to_string());
+    }
+
+    let identifier = path
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<inline workflow>".to_string());
+    let extension = path
+        .and_then(Path::extension)
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    let spec = if extension.eq_ignore_ascii_case("ts") {
+        compile_typescript_workflow(&identifier, source)
+    } else {
+        compile_javascript_workflow(&identifier, source)
+    }
+    .map_err(|err| {
+        ToolError::invalid_input(format!(
+            "Failed to compile declarative Workflow source '{identifier}': {err}"
+        ))
+    })?;
+
+    lower_declarative_workflow_to_imperative_js(&spec)
+}
+
+fn looks_like_declarative_workflow(source: &str) -> bool {
+    let trimmed = source.trim_start();
+    trimmed.starts_with("workflow(")
+        || trimmed.starts_with("export default workflow(")
+        || source.contains("\nworkflow(")
+        || source.contains("\nexport default workflow(")
+}
+
+fn lower_declarative_workflow_to_imperative_js(spec: &WorkflowSpec) -> Result<String, ToolError> {
+    let mut lowerer = DeclarativeWorkflowLowerer::default();
+    lowerer.line("\"use strict\";");
+    lowerer.line("const __results = {};");
+    lowerer.line(format!(
+        "phase({});",
+        js_string(&format!("workflow: {}", spec.goal))
+    ));
+    for node in &spec.nodes {
+        lowerer.lower_node(node, None)?;
+    }
+    lowerer.line("return __results;");
+    Ok(lowerer.finish())
+}
+
+#[derive(Default)]
+struct DeclarativeWorkflowLowerer {
+    source: String,
+    next_var: usize,
+}
+
+impl DeclarativeWorkflowLowerer {
+    fn finish(self) -> String {
+        self.source
+    }
+
+    fn line(&mut self, line: impl AsRef<str>) {
+        self.source.push_str(line.as_ref());
+        self.source.push('\n');
+    }
+
+    fn next_temp(&mut self, prefix: &str) -> String {
+        let value = format!("__{prefix}_{}", self.next_var);
+        self.next_var += 1;
+        value
+    }
+
+    fn lower_node(&mut self, node: &WorkflowNode, phase: Option<&str>) -> Result<(), ToolError> {
+        match node {
+            WorkflowNode::Leaf(spec) => self.lower_leaf(spec, phase),
+            WorkflowNode::BranchSet(spec) => self.lower_branch(spec),
+            WorkflowNode::Sequence(spec) => self.lower_sequence(spec),
+            WorkflowNode::Reduce(spec) => self.lower_reduce(spec),
+            WorkflowNode::TeacherReview(_) => Err(unsupported_declarative_node("teacher_review")),
+            WorkflowNode::LoopUntil(_) => Err(unsupported_declarative_node("loop_until")),
+            WorkflowNode::Cond(_) => Err(unsupported_declarative_node("cond")),
+            WorkflowNode::Expand(_) => Err(unsupported_declarative_node("expand")),
+        }
+    }
+
+    fn lower_leaf(&mut self, spec: &LeafSpec, phase: Option<&str>) -> Result<(), ToolError> {
+        self.line(format!(
+            "__results[{}] = await task({});",
+            js_string(&spec.id),
+            leaf_task_options_expression(spec, phase)?
+        ));
+        Ok(())
+    }
+
+    fn lower_branch(&mut self, spec: &BranchSpec) -> Result<(), ToolError> {
+        self.line(format!("phase({});", js_string(&spec.id)));
+        if spec.parallel {
+            let mut leaves = Vec::new();
+            for child in &spec.children {
+                let WorkflowNode::Leaf(leaf) = child else {
+                    return Err(ToolError::invalid_input(format!(
+                        "Declarative Workflow adapter only supports leaf children inside parallel branch '{}'",
+                        spec.id
+                    )));
+                };
+                leaves.push(leaf);
+            }
+            let temp = self.next_temp("parallel");
+            self.line(format!("const {temp} = await Promise.all(["));
+            for leaf in &leaves {
+                self.line(format!(
+                    "  task({}),",
+                    leaf_task_options_expression(leaf, Some(&spec.id))?
+                ));
+            }
+            self.line("]);");
+            for (index, leaf) in leaves.iter().enumerate() {
+                self.line(format!(
+                    "__results[{}] = {temp}[{index}];",
+                    js_string(&leaf.id)
+                ));
+            }
+            return Ok(());
+        }
+
+        for child in &spec.children {
+            self.lower_node(child, Some(&spec.id))?;
+        }
+        Ok(())
+    }
+
+    fn lower_sequence(&mut self, spec: &SequenceSpec) -> Result<(), ToolError> {
+        self.line(format!("phase({});", js_string(&spec.id)));
+        for child in &spec.children {
+            self.lower_node(child, Some(&spec.id))?;
+        }
+        Ok(())
+    }
+
+    fn lower_reduce(&mut self, spec: &ReduceSpec) -> Result<(), ToolError> {
+        let inputs = result_inputs_expression(&spec.inputs);
+        self.line(format!(
+            "__results[{}] = await task({});",
+            js_string(&spec.id),
+            task_options_expression(
+                format!(
+                    "{} + \"\\n\\nInputs:\\n\" + {inputs}",
+                    js_string(&spec.prompt)
+                ),
+                "general",
+                None,
+                false,
+                None,
+                &spec.id,
+                Some("reduce"),
+                None,
+            )
+        ));
+        Ok(())
+    }
+}
+
+fn unsupported_declarative_node(kind: &str) -> ToolError {
+    ToolError::invalid_input(format!(
+        "Declarative Workflow adapter does not yet support {kind} nodes"
+    ))
+}
+
+fn leaf_description(spec: &LeafSpec) -> String {
+    let mut description = spec.prompt.trim().to_string();
+    let mut metadata = Vec::new();
+    metadata.push(format!("Workflow leaf id: {}", spec.id));
+    metadata.push(format!("Mode: {}", task_mode_name(spec.mode)));
+    if !spec.file_scope.is_empty() {
+        metadata.push(format!("File scope: {}", spec.file_scope.join(", ")));
+    }
+    if !spec.depends_on_results.is_empty() {
+        metadata.push(format!(
+            "Depends on results: {}",
+            spec.depends_on_results.join(", ")
+        ));
+    }
+    if spec.budget != BudgetSpec::default() {
+        let mut budget = Vec::new();
+        if let Some(max_steps) = spec.budget.max_steps {
+            budget.push(format!("max_steps={max_steps}"));
+        }
+        if let Some(timeout_secs) = spec.budget.timeout_secs {
+            budget.push(format!("timeout_secs={timeout_secs}"));
+        }
+        if let Some(max_parallel) = spec.budget.max_parallel {
+            budget.push(format!("max_parallel={max_parallel}"));
+        }
+        if let Some(max_tokens) = spec.budget.max_tokens {
+            budget.push(format!("max_tokens={max_tokens}"));
+        }
+        if !budget.is_empty() {
+            metadata.push(format!("Budget: {}", budget.join(", ")));
+        }
+    }
+    if !metadata.is_empty() {
+        description.push_str("\n\nWorkflow metadata:\n");
+        for item in metadata {
+            description.push_str("- ");
+            description.push_str(&item);
+            description.push('\n');
+        }
+    }
+    description
+}
+
+fn leaf_task_options_expression(spec: &LeafSpec, phase: Option<&str>) -> Result<String, ToolError> {
+    validate_leaf_runtime_contract(spec)?;
+    Ok(task_options_expression(
+        leaf_description_expression(spec),
+        leaf_subagent_type(spec)?,
+        spec.profile.as_deref(),
+        matches!(spec.isolation, IsolationMode::Worktree),
+        spec.budget.max_tokens,
+        &spec.id,
+        phase,
+        leaf_allowed_tools(spec)?,
+    ))
+}
+
+fn validate_leaf_runtime_contract(spec: &LeafSpec) -> Result<(), ToolError> {
+    if spec.mode == TaskMode::ReadOnly && spec.permissions.allow_write {
+        return Err(ToolError::invalid_input(format!(
+            "Workflow leaf '{}' is read_only but requests allow_write permissions",
+            spec.id
+        )));
+    }
+    if spec.mode == TaskMode::ReadOnly && matches!(spec.agent_type, AgentType::Implementer) {
+        return Err(ToolError::invalid_input(format!(
+            "Workflow leaf '{}' is read_only but uses implementer agent_type",
+            spec.id
+        )));
+    }
+    if spec.mode == TaskMode::ReadWrite
+        && matches!(
+            spec.agent_type,
+            AgentType::Explore | AgentType::Plan | AgentType::Review | AgentType::Verifier
+        )
+    {
+        return Err(ToolError::invalid_input(format!(
+            "Workflow leaf '{}' is read_write but uses read-only agent_type {}",
+            spec.id,
+            agent_type_name(spec.agent_type)
+        )));
+    }
+    if spec.mode == TaskMode::ReadOnly
+        && spec
+            .permissions
+            .allowed_tools
+            .iter()
+            .any(|tool| is_write_or_shell_tool(tool))
+    {
+        return Err(ToolError::invalid_input(format!(
+            "Workflow leaf '{}' is read_only but requests write/shell allowed_tools",
+            spec.id
+        )));
+    }
+    Ok(())
+}
+
+fn leaf_description_expression(spec: &LeafSpec) -> String {
+    let description = js_string(&leaf_description(spec));
+    if spec.depends_on_results.is_empty() {
+        return description;
+    }
+    let inputs = result_inputs_expression(&spec.depends_on_results);
+    format!("{description} + \"\\n\\nInputs:\\n\" + {inputs}")
+}
+
+fn result_inputs_expression(inputs: &[String]) -> String {
+    let entries = inputs
+        .iter()
+        .map(|input| format!("[{}, __results[{}]]", js_string(input), js_string(input)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "[{entries}].map(([id, value]) => \"--- \" + id + \" ---\\n\" + String(value ?? \"\")).join(\"\\n\\n\")"
+    )
+}
+
+fn leaf_subagent_type(spec: &LeafSpec) -> Result<&'static str, ToolError> {
+    if spec.mode == TaskMode::ReadOnly && spec.agent_type == AgentType::General {
+        return Ok("review");
+    }
+    Ok(agent_type_name(spec.agent_type))
+}
+
+fn leaf_allowed_tools(spec: &LeafSpec) -> Result<Option<Vec<String>>, ToolError> {
+    if !spec.permissions.allowed_tools.is_empty() {
+        return Ok(Some(spec.permissions.allowed_tools.clone()));
+    }
+    if spec.mode != TaskMode::ReadOnly {
+        return Ok(None);
+    }
+    Ok(Some(
+        read_only_allowed_tools(spec.agent_type)
+            .iter()
+            .map(|tool| (*tool).to_string())
+            .collect(),
+    ))
+}
+
+fn read_only_allowed_tools(agent_type: AgentType) -> &'static [&'static str] {
+    match agent_type {
+        AgentType::Verifier => &["list_dir", "read_file", "grep_files", "file_search"],
+        _ => &["list_dir", "read_file", "grep_files", "file_search"],
+    }
+}
+
+fn is_write_or_shell_tool(tool: &str) -> bool {
+    matches!(
+        tool.trim(),
+        "write_file"
+            | "edit_file"
+            | "apply_patch"
+            | "exec_shell"
+            | "exec_shell_wait"
+            | "exec_shell_interact"
+            | "exec_wait"
+            | "exec_interact"
+    )
+}
+
+fn task_options_expression(
+    description_expr: String,
+    subagent_type: &str,
+    profile: Option<&str>,
+    worktree: bool,
+    token_budget: Option<u64>,
+    label: &str,
+    phase: Option<&str>,
+    allowed_tools: Option<Vec<String>>,
+) -> String {
+    let mut fields = vec![
+        format!("description: {description_expr}"),
+        format!("type: {}", js_string(subagent_type)),
+        format!("label: {}", js_string(label)),
+    ];
+    if let Some(phase) = phase {
+        fields.push(format!("phase: {}", js_string(phase)));
+    }
+    if let Some(profile) = profile {
+        fields.push(format!("profile: {}", js_string(profile)));
+    }
+    if worktree {
+        fields.push("worktree: true".to_string());
+    }
+    if let Some(token_budget) = token_budget {
+        fields.push(format!("tokenBudget: {token_budget}"));
+    }
+    if let Some(allowed_tools) = allowed_tools {
+        fields.push(format!(
+            "allowedTools: {}",
+            serde_json::to_string(&allowed_tools).expect("serializing tool names cannot fail")
+        ));
+    }
+    format!("{{ {} }}", fields.join(", "))
+}
+
+fn js_string(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing JS string cannot fail")
+}
+
+fn agent_type_name(agent_type: AgentType) -> &'static str {
+    match agent_type {
+        AgentType::General => "general",
+        AgentType::Explore => "explore",
+        AgentType::Plan => "plan",
+        AgentType::Review => "review",
+        AgentType::Implementer => "implementer",
+        AgentType::Verifier => "verifier",
+    }
+}
+
+fn task_mode_name(mode: TaskMode) -> &'static str {
+    match mode {
+        TaskMode::ReadOnly => "read_only",
+        TaskMode::ReadWrite => "read_write",
+    }
 }
 
 struct SubAgentWorkflowDriver {
@@ -705,6 +1097,28 @@ mod tests {
     }
 
     #[test]
+    fn source_path_must_stay_inside_workspace_without_trust_mode() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let outside_path = outside.path().join("outside.workflow.js");
+        std::fs::write(&outside_path, "return 1;").expect("outside workflow source");
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
+
+        let err = workflow_source(
+            &json!({
+                "source_path": outside_path
+            }),
+            &ctx,
+        )
+        .expect_err("outside source_path should be denied");
+
+        assert!(
+            err.to_string().contains("must stay inside the workspace"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn subagent_tool_surface_registers_workflow_and_agent() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
@@ -774,6 +1188,182 @@ mod tests {
         assert_eq!(child.result.as_deref(), Some("child done"));
     }
 
+    #[tokio::test]
+    async fn declarative_parallel_spawn_failure_fails_before_reduce() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
+        let (client, calls) = fake_chat_client("should not be called").await;
+        let runtime = SubAgentRuntime::new(
+            client,
+            "deepseek-v4-flash".to_string(),
+            ctx.clone(),
+            true,
+            None,
+            manager,
+        );
+        let tool = WorkflowTool::new(runtime.manager.clone(), runtime);
+
+        let result = tool
+            .execute(
+                json!({
+                    "action": "run",
+                    "script": r#"export default workflow({
+                        "goal": "fail fast",
+                        "nodes": [
+                            {
+                                "branch": {
+                                    "id": "parallel",
+                                    "parallel": true,
+                                    "children": [
+                                        {
+                                            "agent": {
+                                                "id": "bad-profile",
+                                                "prompt": "This child should be rejected before model execution.",
+                                                "profile": "missing-profile"
+                                            }
+                                        }
+                                    ]
+                                }
+                            },
+                            {
+                                "reduce": {
+                                    "id": "summary",
+                                    "inputs": ["bad-profile"],
+                                    "prompt": "This reduce must not run."
+                                }
+                            }
+                        ]
+                    });"#
+                }),
+                &ctx,
+            )
+            .await
+            .expect("failed workflow still returns run record");
+        let payload: Value = serde_json::from_str(&result.content).expect("json result");
+
+        assert_eq!(payload["status"], "failed");
+        assert!(
+            payload["error"]
+                .as_str()
+                .unwrap()
+                .contains("Unknown profile 'missing-profile'"),
+            "{}",
+            payload["error"]
+        );
+        assert!(payload["result"].is_null());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn declarative_dependency_results_are_forwarded_to_downstream_prompt() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
+        let (client, calls, bodies) = fake_chat_client_capturing("upstream-output").await;
+        let runtime = SubAgentRuntime::new(
+            client,
+            "deepseek-v4-flash".to_string(),
+            ctx.clone(),
+            true,
+            None,
+            manager,
+        );
+        let tool = WorkflowTool::new(runtime.manager.clone(), runtime);
+
+        let result = tool
+            .execute(
+                json!({
+                    "action": "run",
+                    "script": r#"export default workflow({
+                        "goal": "dependency forwarding",
+                        "nodes": [
+                            {
+                                "agent": {
+                                    "id": "first",
+                                    "prompt": "Produce the upstream finding.",
+                                    "agent_type": "review"
+                                }
+                            },
+                            {
+                                "agent": {
+                                    "id": "second",
+                                    "prompt": "Use the upstream finding.",
+                                    "agent_type": "review",
+                                    "depends_on_results": ["first"]
+                                }
+                            }
+                        ]
+                    });"#
+                }),
+                &ctx,
+            )
+            .await
+            .expect("dependency workflow should complete");
+        let payload: Value = serde_json::from_str(&result.content).expect("json result");
+
+        assert_eq!(payload["status"], "completed");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let bodies = bodies.lock().expect("captured bodies");
+        let second_body = bodies.get(1).expect("second provider call").to_string();
+        assert!(second_body.contains("--- first ---"), "{second_body}");
+        assert!(second_body.contains("upstream-output"), "{second_body}");
+    }
+
+    #[tokio::test]
+    async fn declarative_issue_audit_fixture_runs_through_subagent_driver() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workflow_dir = tmp.path().join("workflows");
+        std::fs::create_dir_all(&workflow_dir).expect("workflow dir");
+        let fixture = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../workflows/issue_audit.workflow.js"),
+        )
+        .expect("issue audit fixture");
+        std::fs::write(workflow_dir.join("issue_audit.workflow.js"), fixture)
+            .expect("write fixture into workspace");
+
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
+        let (client, calls) = fake_chat_client("audited").await;
+        let runtime = SubAgentRuntime::new(
+            client,
+            "deepseek-v4-flash".to_string(),
+            ctx.clone(),
+            true,
+            None,
+            manager,
+        );
+        let tool = WorkflowTool::new(runtime.manager.clone(), runtime);
+
+        let result = tool
+            .execute(
+                json!({
+                    "action": "run",
+                    "source_path": "workflows/issue_audit.workflow.js"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("declarative workflow should complete");
+        let payload: Value = serde_json::from_str(&result.content).expect("json result");
+
+        assert_eq!(payload["status"], "completed");
+        assert_eq!(payload["result"]["code-audit"], "audited");
+        assert_eq!(payload["result"]["test-audit"], "audited");
+        assert_eq!(payload["result"]["docs-audit"], "audited");
+        assert_eq!(payload["result"]["synthesize-release-risk"], "audited");
+        assert_eq!(payload["child_ids"].as_array().unwrap().len(), 4);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert!(
+            payload["progress"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message == "phase: parallel-audit")
+        );
+    }
+
     fn stub_client() -> DeepSeekClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let config = crate::config::Config {
@@ -784,16 +1374,27 @@ mod tests {
     }
 
     async fn fake_chat_client(response_text: &str) -> (DeepSeekClient, Arc<AtomicUsize>) {
+        let (client, calls, _) = fake_chat_client_capturing(response_text).await;
+        (client, calls)
+    }
+
+    async fn fake_chat_client_capturing(
+        response_text: &str,
+    ) -> (DeepSeekClient, Arc<AtomicUsize>, Arc<Mutex<Vec<Value>>>) {
         let calls = Arc::new(AtomicUsize::new(0));
+        let bodies = Arc::new(Mutex::new(Vec::new()));
         let response_text = response_text.to_string();
         let app = Router::new().route(
             "/{*path}",
             post({
                 let calls = Arc::clone(&calls);
-                move |Json(_body): Json<Value>| {
+                let bodies = Arc::clone(&bodies);
+                move |Json(body): Json<Value>| {
                     let calls = Arc::clone(&calls);
+                    let bodies = Arc::clone(&bodies);
                     let response_text = response_text.clone();
                     async move {
+                        bodies.lock().expect("capture body").push(body);
                         let attempt = calls.fetch_add(1, Ordering::SeqCst) + 1;
                         Json(json!({
                             "id": format!("chatcmpl-workflow-test-{attempt}"),
@@ -833,6 +1434,7 @@ mod tests {
         (
             DeepSeekClient::new(&config).expect("fake chat client"),
             calls,
+            bodies,
         )
     }
 }
