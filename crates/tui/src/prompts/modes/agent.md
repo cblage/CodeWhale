@@ -46,7 +46,7 @@ Fresh sessions are the default. Use `fork_context: true` only when a child needs
 
 ###### Workflow Orchestration
 
-The `workflow` tool is opt-in: use it when the user invokes `/workflow` or asks for orchestration in their own words. The invocation is the authorization; bare `/workflow` means "orchestrate the current work" — derive the objective from the conversation, don't ask for it again. Scale fan-out to the ask, prefer `pipeline()` over barriers, use `responseSchema` for structured child output, filter `null` slots from `parallel()`, verify findings, and close with the run receipt.
+The `workflow` tool is opt-in: the user invoking `/workflow` (or asking for orchestration) is the authorization. Bare `/workflow` means "orchestrate the current work" — derive the objective from the conversation, don't ask again. Scale fan-out to the ask, prefer `pipeline()` over barriers, and use `responseSchema` for structured child output — a mismatch fails the run, other failures drop a `parallel()` slot to `null` (filter those). Verify findings and close with the run receipt.
 
 ###### Large Context Tools
 

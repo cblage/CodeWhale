@@ -217,6 +217,7 @@ impl WorkflowReplayExecutor {
                 memo_usage: WorkflowMemoUsage::default(),
                 output: None,
                 artifacts: Vec::new(),
+                schema_error: None,
             };
             self.resolved_outputs.insert(leaf.id.clone(), None);
             execution.leaf_results.push(result);
@@ -567,6 +568,7 @@ mod tests {
             memo_usage: WorkflowMemoUsage::default(),
             output: Some(output.to_string()),
             artifacts: Vec::new(),
+            schema_error: None,
         }
     }
 

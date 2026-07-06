@@ -1272,6 +1272,13 @@ impl GenericToolCell {
             return lines;
         }
 
+        // #dogfood 0.8.67: give the `workflow` tool a purpose-built run card
+        // (run_id, status, goal, children, progress, schema errors) instead of
+        // collapsing to a one-line generic header or dumping the raw JSON record.
+        if let Some(lines) = self.try_render_as_workflow(width, low_motion) {
+            return lines;
+        }
+
         // Sub-agent launch already gets a dedicated `DelegateCard`
         // that owns the live action tree, status, and final summary. The
         // generic tool block for the same call duplicates that signal at
@@ -1448,6 +1455,150 @@ impl GenericToolCell {
             low_motion,
             mode,
         ))
+    }
+
+    /// #dogfood 0.8.67: render the `workflow` tool as a compact run card rather
+    /// than the generic one-line header (live) or a large JSON dump
+    /// (transcript). Fields are parsed defensively from the tool's JSON output,
+    /// which is either a single `WorkflowRunRecord` or a `{action:"status",
+    /// runs:[...]}` list; anything that does not parse falls back to the
+    /// generic renderer. Full precision (#4038 live overlay) is future work.
+    fn try_render_as_workflow(&self, width: u16, low_motion: bool) -> Option<Vec<Line<'static>>> {
+        if self.name != "workflow" {
+            return None;
+        }
+        let output = self.output.as_ref()?;
+        let value: serde_json::Value = serde_json::from_str(output).ok()?;
+        let is_status_list =
+            value.get("action").and_then(serde_json::Value::as_str) == Some("status");
+        if value.get("run_id").is_none() && !is_status_list {
+            return None;
+        }
+        let family = crate::tui::widgets::tool_card::tool_family_for_name("workflow");
+        let mut lines = Vec::new();
+
+        if is_status_list {
+            let runs = value.get("runs").and_then(serde_json::Value::as_array);
+            let count = value
+                .get("count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_else(|| runs.map(|r| r.len() as u64).unwrap_or(0));
+            let header = format!("{count} run(s)");
+            lines.push(render_tool_header_with_family_and_summary(
+                family,
+                Some(header.as_str()),
+                tool_status_label(self.status),
+                self.status,
+                None,
+                low_motion,
+            ));
+            if let Some(runs) = runs {
+                for run in runs {
+                    let run_id = run
+                        .get("run_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("?");
+                    let status = run
+                        .get("status")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("?");
+                    let children = run
+                        .get("child_count")
+                        .and_then(serde_json::Value::as_u64)
+                        .or_else(|| {
+                            run.get("child_ids")
+                                .and_then(serde_json::Value::as_array)
+                                .map(|a| a.len() as u64)
+                        })
+                        .unwrap_or(0);
+                    lines.extend(render_card_detail_line(
+                        None,
+                        &format!("{run_id} · {status} · {children} child(ren)"),
+                        tool_value_style(),
+                        width,
+                    ));
+                }
+            }
+            return Some(wrap_card_rail(lines));
+        }
+
+        let run_id = value
+            .get("run_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("workflow");
+        lines.push(render_tool_header_with_family_and_summary(
+            family,
+            Some(run_id),
+            tool_status_label(self.status),
+            self.status,
+            None,
+            low_motion,
+        ));
+        if let Some(status) = value.get("status").and_then(serde_json::Value::as_str) {
+            lines.extend(render_compact_kv(
+                "status",
+                status,
+                tool_value_style(),
+                width,
+            ));
+        }
+        if let Some(goal) = value
+            .get("workflow_goal")
+            .and_then(serde_json::Value::as_str)
+            && !goal.trim().is_empty()
+        {
+            lines.extend(render_card_detail_line(
+                Some("goal"),
+                &truncate_text(goal.trim(), 200),
+                tool_value_style(),
+                width,
+            ));
+        }
+        let child_count = value
+            .get("child_ids")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.len())
+            .unwrap_or(0);
+        lines.extend(render_compact_kv(
+            "children",
+            &child_count.to_string(),
+            tool_value_style(),
+            width,
+        ));
+        if let Some(progress) = value.get("progress").and_then(serde_json::Value::as_array)
+            && let Some(last) = progress.last().and_then(serde_json::Value::as_str)
+        {
+            lines.extend(render_card_detail_line(
+                Some("progress"),
+                &format!("{} ({} events)", truncate_text(last, 160), progress.len()),
+                tool_value_style(),
+                width,
+            ));
+        }
+        let schema_error_count = value
+            .get("schema_errors")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.len())
+            .unwrap_or(0);
+        if schema_error_count > 0 {
+            lines.extend(render_card_detail_line(
+                Some("schema errors"),
+                &schema_error_count.to_string(),
+                tool_value_style(),
+                width,
+            ));
+        }
+        if let Some(error) = value.get("error").and_then(serde_json::Value::as_str)
+            && !error.trim().is_empty()
+        {
+            lines.extend(render_card_detail_line(
+                Some("error"),
+                &truncate_text(error.trim(), 200),
+                tool_value_style(),
+                width,
+            ));
+        }
+        Some(wrap_card_rail(lines))
     }
 }
 

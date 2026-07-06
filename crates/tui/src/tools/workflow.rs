@@ -69,6 +69,7 @@ struct WorkflowRunSummary {
     workflow_goal: Option<String>,
     token_budget: Option<u64>,
     child_count: usize,
+    schema_error_count: usize,
     progress_count: usize,
     last_progress: Option<String>,
     leaf_count: usize,
@@ -76,6 +77,12 @@ struct WorkflowRunSummary {
     control_count: usize,
     execution_status: Option<IrWorkflowRunStatus>,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WorkflowSchemaError {
+    task_id: String,
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +97,7 @@ struct WorkflowRunRecord {
     token_budget: Option<u64>,
     child_ids: Vec<String>,
     progress: Vec<String>,
+    schema_errors: Vec<WorkflowSchemaError>,
     result: Option<Value>,
     execution: Option<IrWorkflowExecution>,
     error: Option<String>,
@@ -113,6 +121,7 @@ impl WorkflowRunRecord {
             token_budget,
             child_ids: Vec::new(),
             progress: Vec::new(),
+            schema_errors: Vec::new(),
             result: None,
             execution: None,
             error: None,
@@ -130,6 +139,7 @@ impl WorkflowRunRecord {
             workflow_goal: self.workflow_goal.clone(),
             token_budget: self.token_budget,
             child_count: self.child_ids.len(),
+            schema_error_count: self.schema_errors.len(),
             progress_count: self.progress.len(),
             last_progress: self.progress.last().cloned(),
             leaf_count: self
@@ -425,15 +435,16 @@ async fn run_workflow_vm(
             error = Some(err.to_string());
         }
     }
+    let task_records = driver.task_records_snapshot();
     if let Ok(mut runs_guard) = runs.lock() {
         if let Some(record) = runs_guard.get_mut(&run_id) {
             if record.status != WorkflowRunStatus::Cancelled {
                 record.status = status;
                 record.result = output;
                 record.error = error;
-                record.execution = spec.as_ref().map(|spec| {
-                    execution_from_declarative_spec(spec, driver.task_records_snapshot(), status)
-                });
+                record.execution = spec
+                    .as_ref()
+                    .map(|spec| execution_from_declarative_spec(spec, task_records, status));
                 record.completed_at_ms = Some(now_ms());
             }
         }
@@ -458,6 +469,7 @@ fn workflow_result_for(run_id: &str, runs: SharedWorkflowRuns) -> Result<ToolRes
         "status": summary.status,
         "terminal": summary.status != WorkflowRunStatus::Running,
         "child_count": summary.child_count,
+        "schema_error_count": summary.schema_error_count,
         "leaf_count": summary.leaf_count,
         "branch_count": summary.branch_count,
         "control_count": summary.control_count,
@@ -578,11 +590,14 @@ fn adapt_workflow_source(
 }
 
 fn looks_like_declarative_workflow(source: &str) -> bool {
-    let trimmed = source.trim_start();
-    trimmed.starts_with("workflow(")
-        || trimmed.starts_with("export default workflow(")
-        || source.contains("\nworkflow(")
-        || source.contains("\nexport default workflow(")
+    // Match a top-level `workflow(...)` / `export default workflow(...)` call on
+    // any line, ignoring leading indentation, so an indented (non-column-0)
+    // declarative call is still recognized rather than misrun as an imperative
+    // script (#dogfood 0.8.67).
+    source.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("workflow(") || trimmed.starts_with("export default workflow(")
+    })
 }
 
 fn lower_declarative_workflow_to_imperative_js(spec: &WorkflowSpec) -> Result<String, ToolError> {
@@ -942,6 +957,7 @@ struct RuntimeTaskRecord {
     label: Option<String>,
     status: IrWorkflowRunStatus,
     output: Option<String>,
+    schema_error: Option<String>,
 }
 
 struct SubAgentWorkflowDriver {
@@ -1019,6 +1035,7 @@ impl SubAgentWorkflowDriver {
                     label: request.label.clone(),
                     status: IrWorkflowRunStatus::Running,
                     output: None,
+                    schema_error: None,
                 },
             );
         }
@@ -1050,6 +1067,16 @@ impl SubAgentWorkflowDriver {
             };
             record.status = status;
             record.output = output;
+        }
+    }
+
+    fn record_schema_validation_failure(&self, agent_id: &str, message: String) {
+        if let Ok(mut records) = self.task_records.lock()
+            && let Some(record) = records.get_mut(agent_id)
+        {
+            record.status = IrWorkflowRunStatus::Failed;
+            record.schema_error = Some(message.clone());
+            record.output = Some(message);
         }
     }
 
@@ -1126,14 +1153,26 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
     }
 
     fn progress(&self, event: ProgressEvent) {
+        let mut schema_error = None;
         let message = match event {
             ProgressEvent::Log { message } => format!("log: {message}"),
             ProgressEvent::Phase { title } => format!("phase: {title}"),
+            ProgressEvent::TaskSchemaValidationFailed { task_id, message } => {
+                self.record_schema_validation_failure(&task_id, message.clone());
+                schema_error = Some(WorkflowSchemaError {
+                    task_id: task_id.clone(),
+                    message: message.clone(),
+                });
+                format!("schema validation failed for {task_id}: {message}")
+            }
         };
         if let Ok(mut runs) = self.runs.lock()
             && let Some(record) = runs.get_mut(&self.run_id)
         {
             record.progress.push(message);
+            if let Some(schema_error) = schema_error {
+                record.schema_errors.push(schema_error);
+            }
         }
     }
 }
@@ -1241,6 +1280,7 @@ fn push_leaf_execution(
         memo_usage: WorkflowMemoUsage::default(),
         output: record.and_then(|record| record.output.clone()),
         artifacts: Vec::new(),
+        schema_error: record.and_then(|record| record.schema_error.clone()),
     });
 }
 
@@ -1489,6 +1529,25 @@ mod tests {
     use crate::tools::subagent::{SubAgentRuntime, new_shared_subagent_manager};
     use axum::{Json, Router, routing::post};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn declarative_detection_matches_indented_and_nonleading_workflow_calls() {
+        // column-0 forms
+        assert!(looks_like_declarative_workflow("workflow({ tasks: [] })"));
+        assert!(looks_like_declarative_workflow(
+            "export default workflow({})"
+        ));
+        // #dogfood 0.8.67: a leading statement/comment followed by an INDENTED
+        // top-level workflow( call must still be detected as declarative.
+        assert!(looks_like_declarative_workflow(
+            "// build the run\n  workflow({\n    tasks: [],\n  })"
+        ));
+        // imperative scripts must not be misdetected as declarative
+        assert!(!looks_like_declarative_workflow(
+            "return await parallel([() => task({ description: \"x\" })]);"
+        ));
+        assert!(!looks_like_declarative_workflow("const x = myworkflow(1);"));
+    }
 
     #[test]
     fn workflow_action_defaults_to_start() {
@@ -1799,6 +1858,65 @@ mod tests {
         assert_eq!(summary["control_count"], 0);
         assert!(summary.get("result").is_none());
         assert!(summary.get("execution").is_none());
+    }
+
+    #[tokio::test]
+    async fn workflow_status_surfaces_schema_failure_instead_of_null_success() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
+        let (client, _calls) = fake_chat_client(r#"{"refuted":"yes"}"#).await;
+        let runtime = SubAgentRuntime::new(
+            client,
+            "deepseek-v4-flash".to_string(),
+            ctx.clone(),
+            true,
+            None,
+            manager,
+        );
+        let tool = WorkflowTool::new(runtime.manager.clone(), runtime);
+
+        let run = tool
+            .execute(
+                json!({
+                    "action": "run",
+                    "script": r#"
+                    return await parallel([
+                        () => task({
+                            description: "Return the schema fixture.",
+                            responseSchema: {
+                                type: "object",
+                                properties: { refuted: { type: "boolean" } },
+                                required: ["refuted"],
+                            },
+                        }),
+                    ]);
+                    "#
+                }),
+                &ctx,
+            )
+            .await
+            .expect("workflow run returns a record");
+        let run_payload: Value = serde_json::from_str(&run.content).expect("run json");
+
+        assert_eq!(run_payload["status"], "failed");
+        assert!(run_payload["result"].is_null());
+        assert!(
+            run_payload["error"]
+                .as_str()
+                .unwrap()
+                .contains("responseSchema validation")
+        );
+        assert!(
+            run_payload["progress"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message
+                    .as_str()
+                    .is_some_and(|message| message.contains("schema validation failed"))),
+            "schema validation error should be visible in the run receipt: {run_payload}"
+        );
     }
 
     #[tokio::test]

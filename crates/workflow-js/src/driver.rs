@@ -129,6 +129,16 @@ pub enum ProgressEvent {
         /// The phase title.
         title: String,
     },
+    /// A completed child returned text that failed the caller's
+    /// `responseSchema`. The VM emits this before throwing the validation
+    /// error back into the script so host-side receipts can mark the leaf as
+    /// failed instead of reporting a successful child beside a `null` result.
+    TaskSchemaValidationFailed {
+        /// Driver-assigned task id (engine `agent_id`).
+        task_id: String,
+        /// The validation error already surfaced to JS.
+        message: String,
+    },
 }
 
 /// Host-side executor for a Workflow run.

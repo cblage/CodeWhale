@@ -38,8 +38,8 @@ impl RegisterCommand for WorkflowCmd {
 const ORCHESTRATION_CONTRACT: &str = "Author a workflow script for the `workflow` tool (task()/parallel()/pipeline()/phase()/log()); \
      scale the fan-out to the size of the ask — a quick check gets a few tasks, an audit gets a wider sweep. \
      Prefer pipeline() over barriers so items flow stage-to-stage without waiting. \
-     Use responseSchema on task() when you need structured child output. \
-     parallel() turns failed slots into null — filter them and treat them as failures, not results. \
+     Use responseSchema on task() when you need structured child output; schema mismatches fail loudly in the run receipt. \
+     parallel() turns child failures into null — filter those slots and treat them as failures, not results. \
      Run it with the `workflow` tool (`run` to block, or `start` then `status` for long runs), \
      narrate phases as they complete, verify findings before reporting them as facts, \
      and end with a compact receipt summary: run_id, status, and per-leaf outcomes.";

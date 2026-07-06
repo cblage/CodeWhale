@@ -520,16 +520,27 @@ async fn task_host_inner(
         .spawn_task(request)
         .await
         .map_err(|err| err.to_string())?;
+    let task_id = spawned_task.task_id;
+    let completion_rx = spawned_task.completion;
     let completion = tokio::select! {
         _ = cancel.cancelled() => return Err("task(): run cancelled".to_string()),
-        completion = spawned_task.completion => completion
+        completion = completion_rx => completion
             .map_err(|_| "task(): driver dropped the completion channel".to_string())?,
     };
 
     match completion {
         TaskCompletion::Completed { text } => match &validator {
             None => Ok(serde_json::Value::String(text)),
-            Some(validator) => decode_reply(&text, validator),
+            Some(validator) => match decode_reply(&text, validator) {
+                Ok(value) => Ok(value),
+                Err(message) => {
+                    driver.progress(ProgressEvent::TaskSchemaValidationFailed {
+                        task_id,
+                        message: message.clone(),
+                    });
+                    Err(message)
+                }
+            },
         },
         TaskCompletion::Failed { message } => Err(format!("task(): subagent failed: {message}")),
         TaskCompletion::Cancelled => Err("task(): subagent cancelled".to_string()),
@@ -615,6 +626,7 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
   Math.random = banned("Math.random()");
 
   const MAX_ITEMS = __MAX_ITEMS__;
+  const isResponseSchemaError = (err) => String(err && err.message !== undefined ? err.message : err).includes("responseSchema");
 
   globalThis.task = async (opts) => {
     if (opts === null || typeof opts !== "object") {
@@ -636,8 +648,14 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
     }
     return Promise.all(thunks.map((thunk) => {
       try {
-        return Promise.resolve(typeof thunk === "function" ? thunk() : thunk).catch(() => null);
-      } catch {
+        return Promise.resolve(typeof thunk === "function" ? thunk() : thunk).catch((err) => {
+          if (isResponseSchemaError(err)) throw err;
+          __workflow_log("parallel(): dropped a failed slot as null: " + String((err && err.message) || err));
+          return null;
+        });
+      } catch (err) {
+        if (isResponseSchemaError(err)) return Promise.reject(err);
+        __workflow_log("parallel(): dropped a failed slot as null: " + String((err && err.message) || err));
         return null;
       }
     }));
@@ -655,7 +673,9 @@ const PRELUDE_TEMPLATE: &str = r#""use strict";
       for (const stage of stages) {
         try {
           value = await stage(value, item, index);
-        } catch {
+        } catch (err) {
+          if (isResponseSchemaError(err)) throw err;
+          __workflow_log("pipeline(): dropped item " + index + " as null: " + String((err && err.message) || err));
           return null;
         }
       }

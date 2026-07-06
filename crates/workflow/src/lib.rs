@@ -507,6 +507,9 @@ pub struct LeafResult {
     pub output: Option<String>,
     #[serde(default)]
     pub artifacts: Vec<String>,
+    /// Post-hoc validation failure for the leaf's structured response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -878,6 +881,7 @@ impl MockWorkflowExecutor {
             memo_usage: outcome.memo_usage,
             output: outcome.output,
             artifacts: outcome.artifacts,
+            schema_error: None,
         });
     }
 
@@ -2696,6 +2700,7 @@ mod tests {
             },
             output: Some("README needs clearer setup steps".to_string()),
             artifacts: vec!["trace://leaves/scan-readme".to_string()],
+            schema_error: None,
         };
 
         let json = serde_json::to_string(&result).expect("serialize leaf result");
@@ -3528,6 +3533,7 @@ mod tests {
                 memo_usage: WorkflowMemoUsage::default(),
                 output: Some("cargo test failed with a replay mismatch".to_string()),
                 artifacts: Vec::new(),
+                schema_error: None,
             }],
             ..WorkflowExecution::default()
         };

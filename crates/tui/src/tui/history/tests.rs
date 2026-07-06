@@ -56,6 +56,79 @@ fn render_spillover_annotation_shows_path() {
 }
 
 #[test]
+fn workflow_tool_renders_run_card_instead_of_generic_oneliner() {
+    // #dogfood 0.8.67: a successful `workflow` tool must render a run card
+    // (run_id/status/goal/children/progress), not collapse to a one-liner.
+    let output = serde_json::json!({
+        "run_id": "workflow_2400c600",
+        "status": "completed",
+        "workflow_goal": "audit the FLEET and WORKFLOW docs",
+        "child_ids": ["a1", "a2", "a3"],
+        "progress": ["phase: Scan", "log: 3 findings"],
+        "schema_errors": [],
+    })
+    .to_string();
+    let cell = GenericToolCell {
+        name: "workflow".to_string(),
+        status: ToolStatus::Success,
+        input_summary: Some("action: run".to_string()),
+        output: Some(output),
+        prompts: None,
+        spillover_path: None,
+        output_summary: None,
+        is_diff: false,
+    };
+    let joined: String = cell
+        .lines_with_mode(120, true, super::RenderMode::Live)
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect();
+    assert!(joined.contains("workflow_2400c600"), "run_id: {joined:?}");
+    assert!(joined.contains("completed"), "status: {joined:?}");
+    assert!(joined.contains("audit the FLEET"), "goal: {joined:?}");
+    assert!(joined.contains("children: 3"), "child count: {joined:?}");
+    assert!(
+        joined.contains("log: 3 findings"),
+        "last progress: {joined:?}"
+    );
+}
+
+#[test]
+fn workflow_tool_renders_status_list_card() {
+    let output = serde_json::json!({
+        "action": "status",
+        "count": 2,
+        "runs": [
+            {"run_id": "workflow_aaa", "status": "running", "child_count": 4},
+            {"run_id": "workflow_bbb", "status": "completed", "child_count": 1},
+        ],
+    })
+    .to_string();
+    let cell = GenericToolCell {
+        name: "workflow".to_string(),
+        status: ToolStatus::Success,
+        input_summary: Some("action: status".to_string()),
+        output: Some(output),
+        prompts: None,
+        spillover_path: None,
+        output_summary: None,
+        is_diff: false,
+    };
+    let joined: String = cell
+        .lines_with_mode(120, true, super::RenderMode::Live)
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect();
+    assert!(joined.contains("2 run(s)"), "count header: {joined:?}");
+    assert!(joined.contains("workflow_aaa"), "first run row: {joined:?}");
+    assert!(joined.contains("running"), "run status: {joined:?}");
+    assert!(
+        joined.contains("workflow_bbb"),
+        "second run row: {joined:?}"
+    );
+}
+
+#[test]
 fn render_spillover_annotation_omitted_in_transcript_mode() {
     use std::path::PathBuf;
     // Transcript mode is for replay; the full output is already

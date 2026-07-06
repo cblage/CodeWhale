@@ -199,6 +199,107 @@ async fn parallel_fan_out_maps_one_failure_to_null_slot() {
 }
 
 #[tokio::test]
+async fn parallel_logs_a_breadcrumb_when_a_slot_is_dropped_to_null() {
+    // #dogfood 0.8.67: a fan-out slot that fails for a non-schema reason still
+    // resolves to null (documented resilience), but must leave a breadcrumb in
+    // the run log so an operator can see why a slot came back null / nothing
+    // spawned — instead of a silent "completed" with no explanation.
+    let driver = Arc::new(FakeDriver::new());
+    driver.on("beta", FakeReply::Fail("boom".to_string()));
+    let value = run(
+        &driver,
+        r#"
+        return await parallel([
+            () => task({ description: "alpha" }),
+            () => task({ description: "beta" }),
+        ]);
+        "#,
+        json!(null),
+    )
+    .await
+    .unwrap();
+    assert_eq!(value, json!(["done:alpha", null]));
+    assert!(
+        driver.events().iter().any(|event| matches!(
+            event,
+            ProgressEvent::Log { message } if message.contains("dropped a failed slot")
+        )),
+        "a dropped parallel slot should leave a breadcrumb in the run log"
+    );
+}
+
+#[tokio::test]
+async fn parallel_surfaces_response_schema_errors_instead_of_null() {
+    let driver = Arc::new(FakeDriver::new());
+    driver.on(
+        "bad schema",
+        FakeReply::Complete(r#"{"refuted":"yes"}"#.to_string()),
+    );
+
+    let message = script_message(
+        run(
+            &driver,
+            r#"
+            return await parallel([
+                () => task({
+                    description: "bad schema",
+                    responseSchema: {
+                        type: "object",
+                        properties: { refuted: { type: "boolean" } },
+                        required: ["refuted"],
+                    },
+                }),
+            ]);
+            "#,
+            json!(null),
+        )
+        .await,
+    );
+
+    assert!(message.contains("responseSchema validation"), "{message}");
+    assert!(
+        driver.events().iter().any(|event| matches!(
+            event,
+            ProgressEvent::TaskSchemaValidationFailed { message, .. }
+                if message.contains("responseSchema validation")
+        )),
+        "schema validation error should be emitted as workflow progress"
+    );
+}
+
+#[tokio::test]
+async fn pipeline_surfaces_response_schema_errors_instead_of_null() {
+    let driver = Arc::new(FakeDriver::new());
+    driver.on(
+        "bad schema",
+        FakeReply::Complete(r#"{"refuted":"yes"}"#.to_string()),
+    );
+
+    let message = script_message(
+        run(
+            &driver,
+            r#"
+            return await pipeline(
+                ["bad schema"],
+                (description) => task({
+                    description,
+                    responseSchema: {
+                        type: "object",
+                        properties: { refuted: { type: "boolean" } },
+                        required: ["refuted"],
+                    },
+                }),
+            );
+            "#,
+            json!(null),
+        )
+        .await,
+    );
+
+    assert!(message.contains("responseSchema validation"), "{message}");
+}
+
+#[tokio::test]
 async fn parallel_enforces_the_4096_item_cap_without_spawning() {
     let driver = Arc::new(FakeDriver::new());
     let value = run(
