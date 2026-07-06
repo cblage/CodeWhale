@@ -6151,7 +6151,8 @@ fn rollback_provider_after_auth_failure(app: &mut App, config: &mut Config) -> O
     app.onboarding_needs_api_key = previous_onboarding_needs_api_key;
     app.api_key_env_only = previous_api_key_env_only;
 
-    let persistence_error = (|| -> anyhow::Result<()> {
+    let mut persistence_errors = Vec::new();
+    if let Err(err) = (|| -> anyhow::Result<()> {
         crate::config_persistence::persist_root_string_key(
             app.config_path.as_deref(),
             "provider",
@@ -6170,11 +6171,21 @@ fn rollback_provider_after_auth_failure(app: &mut App, config: &mut Config) -> O
             settings.set("default_model", &app.model_selection_for_persistence())?;
         }
         settings.save()?;
-        crate::tui::setup::record_provider_model_setup_state_for_app(app, config)?;
         Ok(())
-    })()
-    .err()
-    .map(|err| format!("provider rollback not fully persisted: {err}"));
+    })() {
+        persistence_errors.push(err.to_string());
+    }
+    if let Err(err) = crate::tui::setup::record_provider_model_setup_state_for_app(app, config) {
+        persistence_errors.push(format!("setup state was not saved: {err}"));
+    }
+    let persistence_error = if persistence_errors.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "provider rollback not fully persisted: {}",
+            persistence_errors.join("; ")
+        ))
+    };
 
     Some(match persistence_error {
         Some(warning) => format!(
