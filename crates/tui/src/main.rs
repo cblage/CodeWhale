@@ -4743,14 +4743,14 @@ fn doctor_auth_scheme(config: &Config) -> &'static str {
 }
 
 fn doctor_xiaomi_mimo_base_url_uses_token_plan(base_url: &str) -> bool {
-    let normalized = base_url.trim_end_matches('/').to_ascii_lowercase();
+    let normalized = base_url.trim_end_matches('/');
     [
         crate::config::XIAOMI_MIMO_TOKEN_PLAN_CN_BASE_URL,
         crate::config::XIAOMI_MIMO_TOKEN_PLAN_SGP_BASE_URL,
         crate::config::XIAOMI_MIMO_TOKEN_PLAN_AMS_BASE_URL,
     ]
     .iter()
-    .any(|candidate| normalized == candidate.trim_end_matches('/').to_ascii_lowercase())
+    .any(|candidate| normalized.eq_ignore_ascii_case(candidate.trim_end_matches('/')))
 }
 
 fn doctor_api_key_source_label(source: ApiKeySource) -> &'static str {
@@ -4895,15 +4895,19 @@ enum DeepSeekBaseUrlKind {
 }
 
 fn known_deepseek_base_url_kind(base_url: &str) -> Option<DeepSeekBaseUrlKind> {
-    match base_url.trim_end_matches('/').to_ascii_lowercase().as_str() {
-        "https://api.deepseek.com/beta" | "https://api.deepseeki.com/beta" => {
-            Some(DeepSeekBaseUrlKind::Beta)
-        }
-        "https://api.deepseek.com"
-        | "https://api.deepseek.com/v1"
-        | "https://api.deepseeki.com"
-        | "https://api.deepseeki.com/v1" => Some(DeepSeekBaseUrlKind::NonBeta),
-        _ => None,
+    let normalized = base_url.trim_end_matches('/');
+    if normalized.eq_ignore_ascii_case("https://api.deepseek.com/beta")
+        || normalized.eq_ignore_ascii_case("https://api.deepseeki.com/beta")
+    {
+        Some(DeepSeekBaseUrlKind::Beta)
+    } else if normalized.eq_ignore_ascii_case("https://api.deepseek.com")
+        || normalized.eq_ignore_ascii_case("https://api.deepseek.com/v1")
+        || normalized.eq_ignore_ascii_case("https://api.deepseeki.com")
+        || normalized.eq_ignore_ascii_case("https://api.deepseeki.com/v1")
+    {
+        Some(DeepSeekBaseUrlKind::NonBeta)
+    } else {
+        None
     }
 }
 
@@ -8870,6 +8874,21 @@ mod doctor_endpoint_tests {
         assert_eq!(status.status, "disabled");
         assert!(!status.function_strict_sent);
         assert!(status.recommended_base_url.is_none());
+    }
+
+    #[test]
+    fn doctor_known_base_urls_are_ascii_case_insensitive() {
+        assert!(doctor_xiaomi_mimo_base_url_uses_token_plan(
+            "HTTPS://TOKEN-PLAN-CN.XIAOMIMIMO.COM/V1/"
+        ));
+        assert_eq!(
+            known_deepseek_base_url_kind("HTTPS://API.DEEPSEEK.COM/BETA/"),
+            Some(DeepSeekBaseUrlKind::Beta)
+        );
+        assert_eq!(
+            known_deepseek_base_url_kind("HTTPS://API.DEEPSEEK.COM/V1/"),
+            Some(DeepSeekBaseUrlKind::NonBeta)
+        );
     }
 
     #[test]

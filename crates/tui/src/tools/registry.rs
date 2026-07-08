@@ -350,8 +350,8 @@ impl ToolRegistry {
         let names: Vec<&str> = self.tools.keys().map(String::as_str).collect();
         let lower = requested.to_lowercase();
 
-        // 1. lowercase exact
-        if let Some(n) = names.iter().find(|n| n.to_lowercase() == lower) {
+        // 1. ASCII case-insensitive exact
+        if let Some(n) = names.iter().find(|n| n.eq_ignore_ascii_case(requested)) {
             return Some(n);
         }
         // 2. hyphen/space → underscore
@@ -1347,6 +1347,17 @@ mod tests {
         assert!(registry.contains("test_tool"));
         assert!(!registry.contains("nonexistent"));
         assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn resolve_exact_match_is_ascii_case_insensitive() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistry::new(ctx);
+
+        registry.register(make_test_tool("read_file"));
+
+        assert_eq!(registry.resolve("READ_FILE"), Some("read_file"));
     }
 
     #[test]

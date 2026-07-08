@@ -8970,7 +8970,7 @@ fn parse_queue_send_command(input: &str) -> Option<Result<usize, String>> {
     let rest = strip_queue_command_prefix(input.trim())?;
     let mut parts = rest.split_whitespace();
     let action = parts.next()?;
-    if !matches!(action.to_ascii_lowercase().as_str(), "send" | "now") {
+    if !action.eq_ignore_ascii_case("send") && !action.eq_ignore_ascii_case("now") {
         return None;
     }
     let Some(raw_index) = parts.next() else {

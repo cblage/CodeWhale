@@ -7512,6 +7512,7 @@ async fn ctrl_s_sends_edited_queued_draft_into_running_turn() {
 fn parse_queue_send_command_accepts_queue_alias_and_positive_index() {
     assert_eq!(parse_queue_send_command("/queue send 2"), Some(Ok(1)));
     assert_eq!(parse_queue_send_command("/queued now 1"), Some(Ok(0)));
+    assert_eq!(parse_queue_send_command("/queue SEND 1"), Some(Ok(0)));
     assert!(parse_queue_send_command("/queue drop 1").is_none());
     assert!(
         parse_queue_send_command("/queue send 0")

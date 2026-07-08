@@ -1021,7 +1021,7 @@ impl HookExecutor {
             Some(HookCondition::Mode { mode }) => context
                 .mode
                 .as_ref()
-                .is_some_and(|m| m.to_lowercase() == mode.to_lowercase()),
+                .is_some_and(|m| m.eq_ignore_ascii_case(mode)),
             Some(HookCondition::ExitCode { code }) => context.tool_exit_code == Some(*code),
             Some(HookCondition::All { conditions }) => conditions.iter().all(|c| {
                 self.matches_condition(
