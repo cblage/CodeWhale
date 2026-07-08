@@ -3133,9 +3133,10 @@ async fn status_projection_reconciles_stale_running_agent() {
 
     let manager = Arc::new(RwLock::new(inner));
     let context = ToolContext::new(".");
-    let result = inspect_agent_from_input(&json!({"action": "status"}), manager, &context, false)
-        .await
-        .expect("status projection should succeed");
+    let result =
+        inspect_agent_from_input(&json!({"action": "status"}), manager, &context, false, None)
+            .await
+            .expect("status projection should succeed");
     let payload: serde_json::Value =
         serde_json::from_str(&result.content).expect("status payload should be json");
     let agent = payload["agents"]
@@ -6672,4 +6673,170 @@ fn write_json_atomic_survives_concurrent_writers() {
         .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
         .collect();
     assert!(leftover.is_empty(), "temp files leaked: {leftover:?}");
+}
+
+// === agent(action="wait") + peek throttling (#4097) ===
+
+fn insert_running_agent(inner: &mut SubAgentManager, name: &str) -> String {
+    let current_boot = inner.session_boot_id().to_string();
+    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let mut agent = SubAgent::new(
+        name.to_string(),
+        SubAgentType::Explore,
+        "prompt".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        None,
+        None,
+        input_tx,
+        PathBuf::from("."),
+        current_boot,
+    );
+    agent.task_handle = Some(tokio::spawn(async {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }));
+    let agent_id = agent.id.clone();
+    inner.agents.insert(agent_id.clone(), agent);
+    agent_id
+}
+
+#[tokio::test]
+async fn agent_wait_returns_immediately_with_no_children() {
+    let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 1)));
+    let context = ToolContext::new(".");
+    let result = wait_for_subagents_from_input(&json!({"action": "wait"}), manager, &context)
+        .await
+        .expect("wait with no children should succeed");
+    let payload: serde_json::Value =
+        serde_json::from_str(&result.content).expect("wait payload should be json");
+    assert_eq!(payload["running"], json!(0));
+    assert!(
+        payload["settled"]
+            .as_array()
+            .expect("settled array")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn agent_wait_wakes_when_child_settles() {
+    let mut inner = SubAgentManager::new(PathBuf::from("."), 1);
+    let agent_id = insert_running_agent(&mut inner, "test_agent_wait_settles");
+    let manager = Arc::new(RwLock::new(inner));
+
+    let flip = manager.clone();
+    let flip_id = agent_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut manager = flip.write().await;
+        if let Some(agent) = manager.agents.get_mut(&flip_id) {
+            agent.status = SubAgentStatus::Completed;
+        }
+    });
+
+    let context = ToolContext::new(".");
+    let started = Instant::now();
+    let result = wait_for_subagents_from_input(
+        &json!({"action": "wait", "timeout_secs": 30}),
+        manager,
+        &context,
+    )
+    .await
+    .expect("wait should succeed");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "wait must wake on settle, not run out the 30s timeout"
+    );
+    let payload: serde_json::Value =
+        serde_json::from_str(&result.content).expect("wait payload should be json");
+    let settled = payload["settled"].as_array().expect("settled array");
+    assert_eq!(settled.len(), 1);
+    assert_eq!(settled[0]["agent_id"], json!(agent_id));
+    assert_eq!(settled[0]["status"], json!("completed"));
+    assert_eq!(payload["timed_out"], json!(false));
+}
+
+#[tokio::test]
+async fn agent_wait_times_out_and_reports_running_child() {
+    let mut inner = SubAgentManager::new(PathBuf::from("."), 1);
+    let _agent_id = insert_running_agent(&mut inner, "test_agent_wait_timeout");
+    let manager = Arc::new(RwLock::new(inner));
+
+    let context = ToolContext::new(".");
+    let result = wait_for_subagents_from_input(
+        &json!({"action": "wait", "timeout_secs": 1}),
+        manager,
+        &context,
+    )
+    .await
+    .expect("wait timeout should return a snapshot, not an error");
+    let payload: serde_json::Value =
+        serde_json::from_str(&result.content).expect("wait payload should be json");
+    assert_eq!(payload["timed_out"], json!(true));
+    assert_eq!(payload["running"], json!(1));
+    assert!(
+        payload["settled"]
+            .as_array()
+            .expect("settled array")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn agent_wait_rejects_unknown_agent_ref() {
+    let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 1)));
+    let context = ToolContext::new(".");
+    let err = wait_for_subagents_from_input(
+        &json!({"action": "wait", "agent_id": "agent_missing"}),
+        manager,
+        &context,
+    )
+    .await
+    .expect_err("unknown agent ref must fail fast instead of blocking");
+    assert!(matches!(err, ToolError::InvalidInput { .. }));
+}
+
+#[tokio::test]
+async fn agent_peek_unchanged_within_window_returns_compact_nudge() {
+    let mut inner = SubAgentManager::new(PathBuf::from("."), 1);
+    let agent_id = insert_running_agent(&mut inner, "test_agent_peek_throttle");
+    let manager = Arc::new(RwLock::new(inner));
+    let memo: Arc<std::sync::Mutex<HashMap<String, PeekMemo>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let context = ToolContext::new(".");
+    let input = json!({"action": "peek", "agent_id": agent_id});
+
+    let first = inspect_agent_from_input(&input, manager.clone(), &context, true, Some(&memo))
+        .await
+        .expect("first peek should succeed");
+    let first_payload: serde_json::Value =
+        serde_json::from_str(&first.content).expect("first peek payload should be json");
+    assert!(
+        first_payload.get("unchanged").is_none(),
+        "first peek must return the full projection"
+    );
+
+    let second = inspect_agent_from_input(&input, manager, &context, true, Some(&memo))
+        .await
+        .expect("second peek should succeed");
+    let second_payload: serde_json::Value =
+        serde_json::from_str(&second.content).expect("second peek payload should be json");
+    assert_eq!(second_payload["unchanged"], json!(true));
+    assert!(
+        second_payload["hint"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("wait"),
+        "nudge should point at agent(action=wait)"
+    );
+}
+
+#[test]
+fn agent_action_parses_wait_aliases() {
+    for alias in ["wait", "join", "await", "block"] {
+        assert_eq!(
+            parse_agent_tool_action(&json!({"action": alias})).expect("alias should parse"),
+            AgentToolAction::Wait,
+        );
+    }
 }

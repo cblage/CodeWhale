@@ -3555,12 +3555,27 @@ pub fn new_shared_subagent_manager_with_timeout(
 pub struct AgentTool {
     manager: SharedSubAgentManager,
     runtime: SubAgentRuntime,
+    /// Last projection fingerprint per agent, used to throttle repeat
+    /// peek/status calls that observe no change (#4097). Std mutex: locked
+    /// only for brief map reads/writes, never across an await.
+    inspect_memo: Arc<std::sync::Mutex<HashMap<String, PeekMemo>>>,
+}
+
+/// Fingerprint of the last peek/status response for one agent (#4097).
+#[derive(Debug, Clone, Copy)]
+struct PeekMemo {
+    fingerprint: u64,
+    at: Instant,
 }
 
 impl AgentTool {
     #[must_use]
     pub fn new(manager: SharedSubAgentManager, runtime: SubAgentRuntime) -> Self {
-        Self { manager, runtime }
+        Self {
+            manager,
+            runtime,
+            inspect_memo: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
     }
 }
 
@@ -3569,6 +3584,7 @@ enum AgentToolAction {
     Start,
     Status,
     Peek,
+    Wait,
     Cancel,
 }
 
@@ -3580,9 +3596,10 @@ fn parse_agent_tool_action(input: &Value) -> Result<AgentToolAction, ToolError> 
         "" | "start" | "spawn" | "run" => Ok(AgentToolAction::Start),
         "status" | "list" | "inspect" => Ok(AgentToolAction::Status),
         "peek" | "progress" => Ok(AgentToolAction::Peek),
+        "wait" | "join" | "await" | "block" => Ok(AgentToolAction::Wait),
         "cancel" | "stop" | "abort" => Ok(AgentToolAction::Cancel),
         other => Err(ToolError::invalid_input(format!(
-            "Invalid agent action '{other}'. Use start, status, peek, or cancel."
+            "Invalid agent action '{other}'. Use start, status, peek, wait, or cancel."
         ))),
     }
 }
@@ -3606,7 +3623,8 @@ impl ToolSpec for AgentTool {
             "For several independent targets, call agent separately for each target; CodeWhale runs or queues them under runtime capacity and provider rate-limit backpressure. ",
             "The child runs in the background and reports back automatically when finished; keep tiny reads/searches local. ",
             "Pass profile to spawn a saved Fleet roster member (e.g. reviewer, scout, builder) with its role posture, model routing, and instructions. ",
-            "Use action=status or action=peek with agent_id to inspect progress, and action=cancel with agent_id to stop a running child. Returns session projections with transcript_handle for UI/debug inspection."
+            "Use action=status or action=peek with agent_id to inspect progress, and action=cancel with agent_id to stop a running child. Returns session projections with transcript_handle for UI/debug inspection. ",
+            "Never poll with repeated peek/status calls or sleep while children run: results arrive automatically as completion sentinels. If you must block until a child finishes (fan-in before synthesis), make one action=wait call — it blocks until a child settles (all children when agent_id is omitted; timeout_secs caps the block, default 300)."
         )
     }
 
@@ -3616,12 +3634,18 @@ impl ToolSpec for AgentTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["start", "status", "peek", "cancel"],
-                    "description": "start (default) launches a child. status lists current children or inspects agent_id. peek is status for one child. cancel stops a running child by agent_id."
+                    "enum": ["start", "status", "peek", "wait", "cancel"],
+                    "description": "start (default) launches a child. status lists current children or inspects agent_id. peek is status for one child. wait blocks until a running child settles (agent_id for one specific child, otherwise the next completion) — use this instead of polling peek/status or sleeping. cancel stops a running child by agent_id."
                 },
                 "agent_id": {
                     "type": "string",
-                    "description": "Agent id or session name for action=status, action=peek, or action=cancel."
+                    "description": "Agent id or session name for action=status, action=peek, action=wait, or action=cancel."
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 1800,
+                    "description": "For action=wait: maximum seconds to block before returning a still-running snapshot. Default 300."
                 },
                 "include_archived": {
                     "type": "boolean",
@@ -3709,9 +3733,12 @@ impl ToolSpec for AgentTool {
     }
 
     /// #3801: status and peek are read-only queries — no approval needed.
+    /// #4097: wait passively observes children — also read-only.
     fn approval_requirement_for(&self, input: &Value) -> ApprovalRequirement {
         match parse_agent_tool_action(input) {
-            Ok(AgentToolAction::Status) | Ok(AgentToolAction::Peek) => ApprovalRequirement::Auto,
+            Ok(AgentToolAction::Status | AgentToolAction::Peek | AgentToolAction::Wait) => {
+                ApprovalRequirement::Auto
+            }
             _ => ApprovalRequirement::Required,
         }
     }
@@ -3734,11 +3761,12 @@ impl ToolSpec for AgentTool {
         )
     }
 
-    /// #3801: status/peek/cancel actions are read-only queries of manager state.
+    /// #3801: status/peek actions are read-only queries of manager state.
+    /// #4097: wait only observes child lifecycle — read-only as well.
     fn is_read_only_for(&self, input: &Value) -> bool {
         matches!(
             parse_agent_tool_action(input),
-            Ok(AgentToolAction::Status) | Ok(AgentToolAction::Peek)
+            Ok(AgentToolAction::Status | AgentToolAction::Peek | AgentToolAction::Wait)
         )
     }
 
@@ -3752,8 +3780,12 @@ impl ToolSpec for AgentTool {
                     self.manager.clone(),
                     context,
                     matches!(action, AgentToolAction::Peek),
+                    Some(&self.inspect_memo),
                 )
                 .await;
+            }
+            AgentToolAction::Wait => {
+                return wait_for_subagents_from_input(&input, self.manager.clone(), context).await;
             }
             AgentToolAction::Cancel => {
                 return cancel_agent_from_input(&input, self.manager.clone(), context).await;
@@ -3782,11 +3814,30 @@ impl ToolSpec for AgentTool {
     }
 }
 
+/// Repeat peek/status calls on an unchanged running child inside this window
+/// return a compact "no change" nudge instead of a full projection (#4097).
+const PEEK_UNCHANGED_THROTTLE_WINDOW: Duration = Duration::from_secs(30);
+
+/// Stable change fingerprint for a running child's model-visible state.
+/// Volatile fields (durations, timestamps) are deliberately excluded so an
+/// idle child fingerprints identically across back-to-back peeks.
+fn inspect_fingerprint(snapshot: &SubAgentResult) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    subagent_status_name(&snapshot.status).hash(&mut hasher);
+    snapshot.steps_taken.hash(&mut hasher);
+    snapshot.result.is_some().hash(&mut hasher);
+    snapshot.needs_input.is_some().hash(&mut hasher);
+    snapshot.checkpoint.is_some().hash(&mut hasher);
+    hasher.finish()
+}
+
 async fn inspect_agent_from_input(
     input: &Value,
     manager: SharedSubAgentManager,
     context: &ToolContext,
     peek: bool,
+    inspect_memo: Option<&Arc<std::sync::Mutex<HashMap<String, PeekMemo>>>>,
 ) -> Result<ToolResult, ToolError> {
     let include_archived =
         parse_optional_bool(input, &["include_archived", "includeArchived"]).unwrap_or(false);
@@ -3801,6 +3852,53 @@ async fn inspect_agent_from_input(
             let worker_record = manager.get_worker_record(&snapshot.agent_id);
             (snapshot, worker_record)
         };
+
+        // #4097: a running child whose model-visible state hasn't changed
+        // since the last peek gets a compact nudge, not another full
+        // projection. Terminal/parked children always return in full — the
+        // model may legitimately be fetching results.
+        if snapshot.status == SubAgentStatus::Running
+            && let Some(memo_map) = inspect_memo
+        {
+            let fingerprint = inspect_fingerprint(&snapshot);
+            let now = Instant::now();
+            let unchanged = {
+                let mut memo_map = memo_map.lock().expect("inspect memo lock");
+                let unchanged = memo_map.get(&snapshot.agent_id).is_some_and(|memo| {
+                    memo.fingerprint == fingerprint
+                        && now.duration_since(memo.at) < PEEK_UNCHANGED_THROTTLE_WINDOW
+                });
+                memo_map.insert(
+                    snapshot.agent_id.clone(),
+                    PeekMemo {
+                        fingerprint,
+                        at: now,
+                    },
+                );
+                unchanged
+            };
+            if unchanged {
+                let payload = json!({
+                    "action": if peek { "peek" } else { "status" },
+                    "agent_id": snapshot.agent_id,
+                    "name": snapshot.name,
+                    "status": "running",
+                    "unchanged": true,
+                    "hint": "No change since your last check. Do not poll: results arrive automatically as <codewhale:subagent.done> sentinels. Either continue independent work, end your turn, or make one agent(action=\"wait\") call to block until this child settles.",
+                });
+                let mut tool_result = ToolResult::json(&payload)
+                    .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+                tool_result.metadata = Some(json!({
+                    "action": if peek { "peek" } else { "status" },
+                    "status": "running",
+                    "terminal": false,
+                    "agent_id": payload["agent_id"],
+                    "unchanged": true,
+                }));
+                return Ok(tool_result);
+            }
+        }
+
         let projection =
             subagent_session_projection(snapshot, include_archived, context, worker_record).await;
         let mut tool_result = ToolResult::json(&projection)
@@ -3869,6 +3967,172 @@ async fn cancel_agent_from_input(
         "status": projection.status,
         "terminal": projection.terminal,
         "agent_id": projection.agent_id,
+    }));
+    Ok(tool_result)
+}
+
+/// Bounds for `agent(action="wait")` (#4097). The default keeps one wait call
+/// well under provider/tool timeouts while covering typical child runtimes;
+/// on expiry the model gets a still-running snapshot and can wait again.
+const SUBAGENT_WAIT_DEFAULT_TIMEOUT_SECS: u64 = 300;
+/// Runtime floor is 1s (schema advertises 5) so tests can exercise the
+/// timeout path without multi-second sleeps.
+const SUBAGENT_WAIT_MIN_TIMEOUT_SECS: u64 = 1;
+const SUBAGENT_WAIT_MAX_TIMEOUT_SECS: u64 = 1800;
+/// Internal state-check cadence while blocked. Invisible to the model — the
+/// #4097 anti-pattern is model-visible polling that burns turns and tokens,
+/// not a cheap in-process timer.
+const SUBAGENT_WAIT_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+
+/// `agent(action="wait")`: block until a running child settles (leaves
+/// `Running` — completed, failed, cancelled, interrupted/needs-input, or
+/// budget-exhausted), then return a compact summary. Full child results are
+/// still delivered as `<codewhale:subagent.done>` sentinels by the runtime;
+/// this call only provides the legitimate "join" the model previously faked
+/// with peek→sleep loops (#4097).
+///
+/// With `agent_id`, waits for that child specifically. Without it, waits for
+/// the next child to settle (returning every child that settled while
+/// blocked). Returns immediately when nothing is running. Cancel-safe: the
+/// engine turn's cancel token interrupts the block, and no lock is held
+/// across an await.
+async fn wait_for_subagents_from_input(
+    input: &Value,
+    manager: SharedSubAgentManager,
+    context: &ToolContext,
+) -> Result<ToolResult, ToolError> {
+    let timeout_secs = input
+        .get("timeout_secs")
+        .or_else(|| input.get("timeout"))
+        .and_then(Value::as_u64)
+        .unwrap_or(SUBAGENT_WAIT_DEFAULT_TIMEOUT_SECS)
+        .clamp(
+            SUBAGENT_WAIT_MIN_TIMEOUT_SECS,
+            SUBAGENT_WAIT_MAX_TIMEOUT_SECS,
+        );
+    let timeout = Duration::from_secs(timeout_secs);
+    let agent_ref = parse_agent_ref(input);
+
+    // Resolve the watch set up front so a bad reference fails immediately
+    // instead of blocking for the full timeout.
+    let watched: Vec<String> = {
+        let manager = manager.read().await;
+        if let Some(agent_ref) = &agent_ref {
+            let snapshot = manager
+                .get_result_by_ref(agent_ref)
+                .map_err(|err| ToolError::invalid_input(err.to_string()))?;
+            if snapshot.status != SubAgentStatus::Running {
+                let running = manager.running_count();
+                drop(manager);
+                return wait_result_payload(&[snapshot], running, 0, false).await;
+            }
+            vec![snapshot.agent_id]
+        } else {
+            manager
+                .list_filtered(false)
+                .into_iter()
+                .filter(|snapshot| snapshot.status == SubAgentStatus::Running)
+                .map(|snapshot| snapshot.agent_id)
+                .collect()
+        }
+    };
+
+    if watched.is_empty() {
+        let payload = json!({
+            "action": "wait",
+            "settled": [],
+            "running": 0,
+            "note": "No running sub-agents; nothing to wait for.",
+        });
+        let mut tool_result = ToolResult::json(&payload)
+            .map_err(|err| ToolError::execution_failed(err.to_string()))?;
+        tool_result.metadata = Some(json!({ "action": "wait", "settled": 0, "running": 0 }));
+        return Ok(tool_result);
+    }
+
+    let started = Instant::now();
+    let cancelled = async {
+        match &context.cancel_token {
+            Some(token) => token.cancelled().await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(cancelled);
+
+    loop {
+        let (settled, running) = {
+            let manager = manager.read().await;
+            let mut settled = Vec::new();
+            for agent_id in &watched {
+                if let Ok(snapshot) = manager.get_result_by_ref(agent_id)
+                    && snapshot.status != SubAgentStatus::Running
+                {
+                    settled.push(snapshot);
+                }
+            }
+            (settled, manager.running_count())
+        };
+
+        if !settled.is_empty() || running == 0 {
+            return wait_result_payload(&settled, running, started.elapsed().as_millis(), false)
+                .await;
+        }
+        if started.elapsed() >= timeout {
+            return wait_result_payload(&[], running, started.elapsed().as_millis(), true).await;
+        }
+
+        tokio::select! {
+            () = &mut cancelled => {
+                return Ok(ToolResult::success(
+                    "Wait interrupted by user cancellation before any sub-agent settled.",
+                ));
+            }
+            () = tokio::time::sleep(SUBAGENT_WAIT_CHECK_INTERVAL) => {}
+        }
+    }
+}
+
+/// Compact `action=wait` result. Deliberately not a full projection: the
+/// runtime's completion sentinels (and a follow-up peek on a settled child)
+/// carry the full payload; duplicating it here would double token cost.
+async fn wait_result_payload(
+    settled: &[SubAgentResult],
+    running: usize,
+    waited_ms: u128,
+    timed_out: bool,
+) -> Result<ToolResult, ToolError> {
+    let settled_entries: Vec<Value> = settled
+        .iter()
+        .map(|snapshot| {
+            json!({
+                "agent_id": snapshot.agent_id,
+                "name": snapshot.name,
+                "status": subagent_status_name(&snapshot.status),
+            })
+        })
+        .collect();
+    let note = if timed_out {
+        "Wait timed out with children still running. Do not poll — either wait again, continue independent work, or end your turn; results arrive automatically as <codewhale:subagent.done> sentinels."
+    } else if settled_entries.is_empty() {
+        "No sub-agents are running anymore."
+    } else {
+        "Full results arrive as <codewhale:subagent.done> sentinels — read those before synthesizing; do not re-peek settled children unless you need the full projection."
+    };
+    let payload = json!({
+        "action": "wait",
+        "settled": settled_entries,
+        "running": running,
+        "waited_ms": u64::try_from(waited_ms).unwrap_or(u64::MAX),
+        "timed_out": timed_out,
+        "note": note,
+    });
+    let mut tool_result =
+        ToolResult::json(&payload).map_err(|err| ToolError::execution_failed(err.to_string()))?;
+    tool_result.metadata = Some(json!({
+        "action": "wait",
+        "settled": settled.len(),
+        "running": running,
+        "timed_out": timed_out,
     }));
     Ok(tool_result)
 }

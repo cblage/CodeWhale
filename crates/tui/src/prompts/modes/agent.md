@@ -37,6 +37,8 @@ After spawning a background shell or sub-agent, keep doing independent work in t
 
 Delegate only independent, fire-and-forget work via raw `agent` children. When parallel results must be combined, verified, or returned as one answer, cast one manager and route the work through the `workflow` tool: fan out, wait, aggregate, verify, then synthesize one result the operator can depend on. No fan-out without a fan-in owner.
 
+**Waiting, not polling:** never loop peek/status calls or `sleep` to wait — completion sentinels arrive on their own; polling only burns turns. While children run, do independent work or end your turn. To block for fan-in, make one `agent(action="wait")` call.
+
 Use `type: "explore"` for read-only scouting; it defaults to `model_strength: "faster"`. Use `model_strength: "same"` when the child needs parent-level capability. For broad investigations, open 2-4 `type: "explore"` sub-agents in parallel only when their outputs are independent; otherwise use `workflow` so one manager owns fan-in.
 
 Brief sub-agents with a compact Subagent Brief: `QUESTION`, `SCOPE`, `ALREADY_KNOWN`, `EFFORT`, `STOP_CONDITION`, and `OUTPUT` containing `VERDICT`, `EVIDENCE`, `GAPS`, `NEXT`. Explore briefs default to `quick`, read-only, about 3-5 tool calls. Review/verifier children stop after decisive evidence.
