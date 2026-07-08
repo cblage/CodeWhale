@@ -608,8 +608,22 @@ fn sidebar_work_summary(app: &mut App) -> SidebarWorkSummary {
         let (strategy_explanation, strategy_steps) = if plan.is_empty() {
             (None, Vec::new())
         } else {
+            // update_plan steers models toward artifact fields (objective,
+            // approach, constraints, ...) and away from duplicating the
+            // checklist, so a live plan often has neither `explanation` nor
+            // `plan[]` steps. Fall back to the strongest artifact field —
+            // otherwise the Work panel counts as contentless and disappears
+            // whenever agents are active (#3983).
+            let plan_snapshot = plan.snapshot();
+            let explanation = plan
+                .explanation()
+                .map(str::to_string)
+                .or(plan_snapshot.objective)
+                .or(plan_snapshot.title)
+                .or(plan_snapshot.recommended_approach)
+                .or(plan_snapshot.context_summary);
             (
-                plan.explanation().map(str::to_string),
+                explanation,
                 plan.steps()
                     .iter()
                     .map(|step| SidebarWorkStrategyStep {
@@ -4254,6 +4268,33 @@ mod tests {
             text.iter()
                 .any(|line| line.contains("High-level sequencing")),
             "non-empty plan explanation should render: {text:?}"
+        );
+    }
+
+    #[test]
+    fn metadata_only_plan_counts_as_work_content() {
+        use crate::tools::plan::UpdatePlanArgs;
+
+        let mut app = create_test_app();
+        {
+            let mut plan = app.plan_state.try_lock().expect("plan lock");
+            plan.update(UpdatePlanArgs {
+                objective: Some("Ship the catalog lane".to_string()),
+                critical_files: vec!["provider_lake.rs".to_string()],
+                ..UpdatePlanArgs::default()
+            });
+        }
+
+        let summary = sidebar_work_summary(&mut app);
+        assert!(
+            summary.has_strategy(),
+            "a plan carrying only artifact fields must still surface as strategy (#3983)"
+        );
+        assert!(summary.has_useful_content());
+        assert_eq!(
+            summary.strategy_explanation.as_deref(),
+            Some("Ship the catalog lane"),
+            "objective should back-fill the missing explanation"
         );
     }
 
