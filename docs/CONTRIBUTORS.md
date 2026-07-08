@@ -34,6 +34,10 @@ The v0.8.68 maintenance lane started with post-release cleanup on `main`: runtim
 thread persistence, terminal selection, UTF-8 edit handling, README discovery,
 and dead-code removal landed alongside Cursor dogfood evidence for v0.8.67.
 
+- **[Jeffrey Luna / Mr-Moon121](https://github.com/Mr-Moon121)** — anti-polling
+  constitution for sub-agent waiting (harvested into #4097 / PR #4229 from
+  PR #4098)
+
 - **[MXAntian](https://github.com/MXAntian)** — persist compaction summaries
   into thread records so `/v1` engine reloads keep compacted context (#4091)
 - **[nightt5879](https://github.com/nightt5879)** — keep native terminal

@@ -178,18 +178,16 @@ impl<'a> HeaderWidget<'a> {
 
     fn mode_color(mode: AppMode) -> Color {
         match mode {
-            AppMode::Agent | AppMode::Auto | AppMode::Multitask => palette::MODE_AGENT,
-            AppMode::Yolo | AppMode::Operate => palette::MODE_YOLO,
+            AppMode::Agent | AppMode::Auto | AppMode::Yolo => palette::MODE_AGENT,
             AppMode::Plan => palette::MODE_PLAN,
+            AppMode::Operate => palette::MODE_OPERATE,
         }
     }
 
     fn mode_name(mode: AppMode) -> &'static str {
         match mode {
-            AppMode::Agent | AppMode::Auto => "Act",
-            AppMode::Yolo => "Yolo",
+            AppMode::Agent | AppMode::Auto | AppMode::Yolo => "Act",
             AppMode::Plan => "Plan",
-            AppMode::Multitask => "Multitask",
             AppMode::Operate => "Operate",
         }
     }
@@ -662,6 +660,7 @@ mod tests {
     fn narrow_header_drops_version_chip_before_dropping_mode() {
         // Very tight width budget — the version is among the first
         // chips to disappear; the mode label must still render.
+        // YOLO is invisible Act+Bypass shorthand, so the chip reads "Act".
         let rendered = render_header(
             HeaderData::new(
                 AppMode::Yolo,
@@ -679,7 +678,7 @@ mod tests {
             "version chip should drop under width pressure: {rendered:?}",
         );
         assert!(
-            rendered.contains("Yolo") || rendered.contains('Y'),
+            rendered.contains("Act") || rendered.contains('A'),
             "mode label must survive: {rendered:?}",
         );
     }
@@ -732,9 +731,11 @@ mod tests {
             8,
         );
 
-        assert!(rendered.trim_start().starts_with('Y'));
+        // YOLO renders as Act; under extreme width pressure only the first
+        // glyph of the mode chip remains.
+        assert!(rendered.trim_start().starts_with('A'));
         assert!(!rendered.contains("Plan"));
-        assert!(!rendered.contains("Agent"));
+        assert!(!rendered.contains("Operate"));
     }
 
     #[test]

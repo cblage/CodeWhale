@@ -674,11 +674,9 @@ fn subagent_mailbox_best_effort_send_permitted(
 impl Engine {
     fn mode_runtime_instructions(mode: AppMode) -> &'static str {
         match mode {
-            AppMode::Agent | AppMode::Auto => prompts::AGENT_MODE,
+            AppMode::Agent | AppMode::Auto | AppMode::Yolo => prompts::AGENT_MODE,
             AppMode::Plan => prompts::PLAN_MODE,
-            AppMode::Multitask => prompts::MULTITASK_MODE,
             AppMode::Operate => prompts::OPERATE_MODE,
-            AppMode::Yolo => prompts::YOLO_MODE,
         }
         .trim()
     }

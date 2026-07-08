@@ -102,7 +102,7 @@ check_for_updates = true
 # Optional 1-8 sidebar hotbar bindings. When no [[hotbar]] tables are present,
 # the TUI uses built-in defaults:
 #   1 voice.toggle      2 session.compact   3 mode.plan        4 mode.agent
-#   5 mode.yolo         6 palette.open      7 sidebar.toggle   8 trust.toggle
+#   5 mode.operate      6 palette.open      7 sidebar.toggle   8 trust.toggle
 #
 # Invalid slots are skipped with a warning, duplicate slots use the last entry,
 # and unknown actions are preserved so the UI can show a disabled entry.

@@ -145,9 +145,7 @@ fn permission_summary(app: &App) -> String {
 fn safety_summary(app: &App) -> &'static str {
     match app.mode {
         AppMode::Plan => "sandbox read-only, network off",
-        AppMode::Agent | AppMode::Auto | AppMode::Multitask | AppMode::Operate => {
-            "sandbox workspace-write, network on"
-        }
+        AppMode::Agent | AppMode::Auto | AppMode::Operate => "sandbox workspace-write, network on",
         AppMode::Yolo => "sandbox disabled, network unrestricted",
     }
 }

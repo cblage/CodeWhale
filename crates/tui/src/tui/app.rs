@@ -169,7 +169,6 @@ pub enum AppMode {
     /// Legacy compatibility alias; resolves to [`Self::Agent`] + bypass approvals.
     Yolo,
     Plan,
-    Multitask,
     Operate,
 }
 
@@ -373,6 +372,17 @@ pub struct ModelPickerMemory {
     pub catalog_view: bool,
     /// Model row id highlighted at dismissal, if it was a real row.
     pub selected_row_id: Option<String>,
+}
+
+/// Browsing context captured when the `/provider` picker is dismissed.
+/// Mirrors [`ModelPickerMemory`] so reopen restores view + highlight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderPickerMemory {
+    /// True when the user left the picker in the full-catalog view
+    /// (`A` toggle), false for the configured-only default view.
+    pub catalog_view: bool,
+    /// Provider id highlighted at dismissal, if it was a real row.
+    pub selected_provider_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -952,23 +962,23 @@ const MAX_COMPOSER_DISPLAY_CHARS: usize = 4_000;
 const MAX_DRAFT_HISTORY: usize = 50;
 
 impl AppMode {
-    /// Keyboard cycle order: Plan -> Act -> Multitask -> Operate -> Plan.
+    /// Keyboard cycle order: Plan -> Act -> Operate -> Plan.
     ///
     /// `Auto` remains an internal variant while the real implementation is
     /// redesigned; do not expose it through user-facing mode selection (#3733).
     /// `Yolo` is kept for parse/back-compat only and is not in the Tab cycle.
-    pub const CYCLE: [Self; 4] = [Self::Plan, Self::Agent, Self::Multitask, Self::Operate];
+    pub const CYCLE: [Self; 3] = [Self::Plan, Self::Agent, Self::Operate];
 
-    /// User-facing picker / numeric command order.
-    pub const CHOICES: [Self; 4] = [Self::Agent, Self::Plan, Self::Multitask, Self::Operate];
+    /// User-facing picker / numeric command order: 1 Act / 2 Plan / 3 Operate.
+    pub const CHOICES: [Self; 3] = [Self::Agent, Self::Plan, Self::Operate];
 
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "agent" | "act" | "auto" | "1" => Some(Self::Agent),
             "plan" | "2" => Some(Self::Plan),
-            "multitask" | "multi" | "3" => Some(Self::Multitask),
-            "operate" | "operation" | "ops" | "5" => Some(Self::Operate),
+            "operate" | "operation" | "ops" | "3" => Some(Self::Operate),
+            // Invisible one-way permission shorthand only — never a visible mode.
             "yolo" | "4" | "bypass" | "bypass-permissions" | "bypasspermissions" => {
                 Some(Self::Yolo)
             }
@@ -978,7 +988,11 @@ impl AppMode {
 
     #[must_use]
     pub fn from_setting(value: &str) -> Self {
-        Self::parse(value).unwrap_or(Self::Agent)
+        // Unreleased Multitask never shipped; normalize leftover settings to Operate.
+        match value.trim().to_ascii_lowercase().as_str() {
+            "multitask" | "multi" | "5" => Self::Operate,
+            other => Self::parse(other).unwrap_or(Self::Agent),
+        }
     }
 
     #[must_use]
@@ -986,9 +1000,9 @@ impl AppMode {
         match self {
             Self::Agent => "agent",
             Self::Auto => "agent",
-            Self::Yolo => "yolo",
+            // Write current permission vocabulary, not the legacy YOLO label.
+            Self::Yolo => "agent",
             Self::Plan => "plan",
-            Self::Multitask => "multitask",
             Self::Operate => "operate",
         }
     }
@@ -998,9 +1012,8 @@ impl AppMode {
         match self {
             AppMode::Agent => "ACT",
             AppMode::Auto => "ACT",
-            AppMode::Yolo => "YOLO",
+            AppMode::Yolo => "ACT",
             AppMode::Plan => "PLAN",
-            AppMode::Multitask => "MULTITASK",
             AppMode::Operate => "OPERATE",
         }
     }
@@ -1010,9 +1023,8 @@ impl AppMode {
         match self {
             AppMode::Agent => "Act",
             AppMode::Auto => "Act",
-            AppMode::Yolo => "YOLO",
+            AppMode::Yolo => "Act",
             AppMode::Plan => "Plan",
-            AppMode::Multitask => "Multitask",
             AppMode::Operate => "Operate",
         }
     }
@@ -1020,29 +1032,23 @@ impl AppMode {
     #[must_use]
     pub fn number(self) -> char {
         match self {
-            AppMode::Agent => '1',
+            AppMode::Agent | AppMode::Auto | AppMode::Yolo => '1',
             AppMode::Plan => '2',
-            AppMode::Multitask => '3',
-            AppMode::Auto => '1',
-            AppMode::Yolo => '4',
-            AppMode::Operate => '5',
+            AppMode::Operate => '3',
         }
     }
 
     #[must_use]
     pub fn uses_agent_baseline(self) -> bool {
-        matches!(
-            self,
-            Self::Agent | Self::Auto | Self::Multitask | Self::Operate
-        )
+        matches!(self, Self::Agent | Self::Auto | Self::Operate)
     }
 
-    /// Wave 7 M4/M5: delegation modes get a higher parallel launch floor so
-    /// background fan-out is not throttled to a single slot when config is low.
+    /// Operate gets a higher parallel launch floor so background fan-out is
+    /// not throttled to a single slot when config is low.
     #[must_use]
     pub fn mode_delegation_launch_floor(self) -> usize {
         match self {
-            Self::Multitask | Self::Operate => 4,
+            Self::Operate => 4,
             _ => 1,
         }
     }
@@ -1050,7 +1056,7 @@ impl AppMode {
     /// Whether entering this mode should emphasize the Agents sidebar panel.
     #[must_use]
     pub fn prefers_agents_sidebar(self) -> bool {
-        matches!(self, Self::Multitask | Self::Operate)
+        matches!(self, Self::Operate)
     }
 
     /// Localized short name for the mode picker (user-facing surface only).
@@ -1059,10 +1065,8 @@ impl AppMode {
         tr(
             locale,
             match self {
-                AppMode::Agent | AppMode::Auto => MessageId::AppModeAgent,
-                AppMode::Yolo => MessageId::AppModeYolo,
+                AppMode::Agent | AppMode::Auto | AppMode::Yolo => MessageId::AppModeAgent,
                 AppMode::Plan => MessageId::AppModePlan,
-                AppMode::Multitask => MessageId::AppModeMultitask,
                 AppMode::Operate => MessageId::AppModeOperate,
             },
         )
@@ -1074,10 +1078,8 @@ impl AppMode {
         tr(
             locale,
             match self {
-                AppMode::Agent | AppMode::Auto => MessageId::AppModeAgentHint,
+                AppMode::Agent | AppMode::Auto | AppMode::Yolo => MessageId::AppModeAgentHint,
                 AppMode::Plan => MessageId::AppModePlanHint,
-                AppMode::Yolo => MessageId::AppModeYoloHint,
-                AppMode::Multitask => MessageId::AppModeMultitaskHint,
                 AppMode::Operate => MessageId::AppModeOperateHint,
             },
         )
@@ -1088,11 +1090,10 @@ impl AppMode {
     pub fn description(self) -> &'static str {
         match self {
             AppMode::Agent | AppMode::Auto => "Act mode - autonomous task execution with tools",
-            AppMode::Yolo => "YOLO mode - full tool access without approvals (deprecated)",
+            AppMode::Yolo => "Act mode with bypass permissions (legacy YOLO shorthand)",
             AppMode::Plan => "Plan mode - design before implementing",
-            AppMode::Multitask => "Multitask mode - light delegation; operator stays responsive",
             AppMode::Operate => {
-                "Operate mode - Fleet operator conductor; workers execute, you monitor"
+                "Operate mode - coordinate workflows, spawn workers, wait, and dispatch more work"
             }
         }
     }
@@ -1817,6 +1818,8 @@ pub struct App {
     /// restores the view mode and highlighted row instead of resetting to the
     /// top (#4109 picker memory). Session-scoped, never persisted.
     pub model_picker_memory: Option<ModelPickerMemory>,
+    /// Browsing context from the last dismissed `/provider` picker.
+    pub provider_picker_memory: Option<ProviderPickerMemory>,
     /// Last known mouse position for tooltip placement.
     pub last_mouse_pos: Option<(u16, u16)>,
     /// Whether the user is currently dragging the sidebar resize handle.
@@ -2811,6 +2814,7 @@ impl App {
             sidebar_hover_tooltip: None,
             cached_work_summary: None,
             model_picker_memory: None,
+            provider_picker_memory: None,
             last_mouse_pos: None,
             sidebar_resizing: false,
             sidebar_resize_anchor_x: 0,
@@ -3234,7 +3238,7 @@ impl App {
         }
     }
 
-    /// Cycle through modes: Plan → Act → Multitask → Operate → Plan.
+    /// Cycle through modes: Plan → Act → Operate → Plan.
     pub fn cycle_mode(&mut self) {
         if self.reject_setting_change_while_busy("Mode") {
             return;
@@ -6195,7 +6199,7 @@ pub enum AppAction {
     OpenProviderSetup {
         provider: Option<ApiProvider>,
     },
-    /// Open the `/mode` picker modal for Agent / Plan / YOLO.
+    /// Open the `/mode` picker modal for Act / Plan / Operate.
     OpenModePicker,
     /// Refresh the engine prompt after the UI operating mode changes.
     ModeChanged(AppMode),

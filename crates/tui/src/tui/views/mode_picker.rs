@@ -1,4 +1,4 @@
-//! `/mode` picker for Agent / Plan / YOLO.
+//! `/mode` picker for Act / Plan / Operate.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -254,28 +254,24 @@ mod tests {
 
     #[test]
     fn number_keys_select_modes() {
-        // Wave 7 picker roster: 1 Act, 2 Plan, 3 Multitask, 5 Operate.
+        // Visible roster: 1 Act, 2 Plan, 3 Operate. No Multitask / YOLO / gap.
         let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
         let action = view.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
-        match action {
-            ViewAction::EmitAndClose(ViewEvent::ModeSelected { mode }) => {
-                assert_eq!(mode, AppMode::Multitask);
-            }
-            other => panic!("expected ModeSelected, got {other:?}"),
-        }
-
-        // The deprecated YOLO slot (4) is not offered by the picker.
-        let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
-        let action = view.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE));
-        assert!(matches!(action, ViewAction::None));
-
-        let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
-        let action = view.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE));
         match action {
             ViewAction::EmitAndClose(ViewEvent::ModeSelected { mode }) => {
                 assert_eq!(mode, AppMode::Operate);
             }
             other => panic!("expected ModeSelected, got {other:?}"),
         }
+
+        // Legacy YOLO shorthand (4) is not offered by the picker.
+        let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
+        let action = view.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE));
+        assert!(matches!(action, ViewAction::None));
+
+        // Old Operate number (5) is gone — no numeric gaps.
+        let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
+        let action = view.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE));
+        assert!(matches!(action, ViewAction::None));
     }
 }

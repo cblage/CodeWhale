@@ -67,7 +67,7 @@ Fresh configs resolve to this default bar unless `[[hotbar]]` overrides it or `h
 | 2    | `Alt-2` | `session.compact`  | `compact` |
 | 3    | `Alt-3` | `mode.plan`        | `plan`    |
 | 4    | `Alt-4` | `mode.agent`       | `agent`   |
-| 5    | `Alt-5` | `mode.yolo`        | `yolo`    |
+| 5    | `Alt-5` | `mode.operate`     | `operate` |
 | 6    | `Alt-6` | `palette.open`     | `palette` |
 | 7    | `Alt-7` | `sidebar.toggle`   | `side`    |
 | 8    | `Alt-8` | `trust.toggle`     | `trust`   |

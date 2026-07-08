@@ -353,7 +353,11 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        App::new(options, &Config::default())
+        // Pin sidebar so dogfood machines with Agents-visible settings.toml
+        // do not hide the footer agents chip this test asserts.
+        let mut app = App::new(options, &Config::default());
+        app.sidebar_focus = crate::tui::app::SidebarFocus::Hidden;
+        app
     }
 
     #[test]

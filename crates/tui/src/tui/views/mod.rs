@@ -579,6 +579,12 @@ pub enum ViewEvent {
         catalog_view: bool,
         selected_row_id: Option<String>,
     },
+    /// Emitted by the `/provider` picker on Esc so the next open can restore
+    /// the browsing context — view mode and highlighted row.
+    ProviderPickerDismissed {
+        catalog_view: bool,
+        selected_provider_id: Option<String>,
+    },
     /// Emitted by the `/provider` picker when the user selects a provider
     /// that already has credentials — the handler should perform the same
     /// switch as `AppAction::SwitchProvider`.

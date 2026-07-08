@@ -1129,6 +1129,16 @@ impl ProviderPickerView {
         config: &Config,
         runtime_status: Option<ProviderRuntimeStatus>,
     ) -> Self {
+        Self::new_with_runtime_status_and_memory(active, config, runtime_status, None)
+    }
+
+    #[must_use]
+    pub fn new_with_runtime_status_and_memory(
+        active: ApiProvider,
+        config: &Config,
+        runtime_status: Option<ProviderRuntimeStatus>,
+        memory: Option<&crate::tui::app::ProviderPickerMemory>,
+    ) -> Self {
         // Present providers in the shared metadata display order (#3076). The
         // active provider is highlighted via `selected_idx` below, so it is
         // never lost in the list.
@@ -1166,7 +1176,7 @@ impl ProviderPickerView {
         } else {
             ProviderListView::Catalog
         };
-        Self {
+        let mut picker = Self {
             rows,
             selected_idx,
             stage: Stage::List,
@@ -1179,6 +1189,37 @@ impl ProviderPickerView {
             custom_provider_base_url: String::new(),
             custom_provider_model: String::new(),
             custom_provider_api_key_env: String::new(),
+        };
+        picker.restore_memory(memory);
+        picker
+    }
+
+    /// Restore browsing context from the last dismissed `/provider` picker.
+    fn restore_memory(&mut self, memory: Option<&crate::tui::app::ProviderPickerMemory>) {
+        let Some(memory) = memory else {
+            return;
+        };
+        if memory.catalog_view {
+            self.view = ProviderListView::Catalog;
+        }
+        if let Some(remembered_id) = memory.selected_provider_id.as_deref() {
+            if let Some(idx) = self
+                .rows
+                .iter()
+                .position(|row| row.provider_id == remembered_id)
+            {
+                if self.row_visible(idx) || memory.catalog_view {
+                    if memory.catalog_view {
+                        self.view = ProviderListView::Catalog;
+                    }
+                    self.selected_idx = idx;
+                }
+            }
+        }
+        if !self.rows.is_empty() && !self.row_visible(self.selected_idx) {
+            self.selected_idx = (0..self.rows.len())
+                .find(|idx| self.row_visible(*idx))
+                .unwrap_or(0);
         }
     }
 
@@ -1935,7 +1976,13 @@ impl ModalView for ProviderPickerView {
                     self.update_query(String::new());
                     ViewAction::None
                 }
-                KeyCode::Esc => ViewAction::Close,
+                KeyCode::Esc => ViewAction::EmitAndClose(ViewEvent::ProviderPickerDismissed {
+                    catalog_view: self.view == ProviderListView::Catalog,
+                    selected_provider_id: self
+                        .rows
+                        .get(self.selected_idx)
+                        .map(|row| row.provider_id.clone()),
+                }),
                 KeyCode::Up => {
                     self.move_up();
                     ViewAction::None
@@ -3650,11 +3697,14 @@ mod tests {
     }
 
     #[test]
-    fn list_esc_closes_without_emitting() {
+    fn list_esc_emits_dismiss_memory() {
         let config = Config::default();
         let mut picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
         let action = picker.handle_key(key(KeyCode::Esc));
-        assert!(matches!(action, ViewAction::Close));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ProviderPickerDismissed { .. })
+        ));
     }
 
     #[test]
@@ -3795,6 +3845,45 @@ mod tests {
         assert!(
             highlighted_cells >= 32,
             "selected provider row should use a visible continuous highlight"
+        );
+    }
+
+    #[test]
+    fn esc_reports_browsing_context_and_reopen_restores_it() {
+        let config = Config::default();
+        let mut picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
+        // Browse full catalog and move highlight.
+        picker.handle_key(key(KeyCode::Char('a')));
+        picker.handle_key(key(KeyCode::Down));
+        let remembered_id = picker.rows[picker.selected_idx].provider_id.clone();
+        let action = picker.handle_key(key(KeyCode::Esc));
+        let ViewAction::EmitAndClose(ViewEvent::ProviderPickerDismissed {
+            catalog_view,
+            selected_provider_id,
+        }) = action
+        else {
+            panic!("expected ProviderPickerDismissed");
+        };
+        assert!(catalog_view);
+        assert_eq!(
+            selected_provider_id.as_deref(),
+            Some(remembered_id.as_str())
+        );
+
+        let memory = crate::tui::app::ProviderPickerMemory {
+            catalog_view,
+            selected_provider_id,
+        };
+        let reopened = ProviderPickerView::new_with_runtime_status_and_memory(
+            ApiProvider::Deepseek,
+            &config,
+            None,
+            Some(&memory),
+        );
+        assert_eq!(reopened.view, ProviderListView::Catalog);
+        assert_eq!(
+            reopened.rows[reopened.selected_idx].provider_id,
+            remembered_id
         );
     }
 }

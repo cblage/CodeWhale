@@ -95,7 +95,6 @@ fn assert_viewport_starts_at_top(frame: &qa_harness::Frame) {
         frame.row(0).contains("Plan")
             || frame.row(0).contains("Act")
             || frame.row(0).contains("Agent")
-            || frame.row(0).contains("Multitask")
             || frame.row(0).contains("Operate")
             || frame.row(0).contains("Yolo")
             || frame.row(0).contains("DeepSeek"),

@@ -1476,50 +1476,45 @@ fn app_mode_helpers_centralize_parse_labels_and_cycle_order() {
     assert_eq!(AppMode::parse("act"), Some(AppMode::Agent));
     assert_eq!(AppMode::parse("2"), Some(AppMode::Plan));
     assert_eq!(AppMode::parse("auto"), Some(AppMode::Agent));
-    assert_eq!(AppMode::parse("3"), Some(AppMode::Multitask));
-    assert_eq!(AppMode::parse("5"), Some(AppMode::Operate));
+    assert_eq!(AppMode::parse("3"), Some(AppMode::Operate));
+    assert_eq!(AppMode::parse("operate"), Some(AppMode::Operate));
     assert_eq!(AppMode::parse("YOLO"), Some(AppMode::Yolo));
     assert_eq!(AppMode::parse("4"), Some(AppMode::Yolo));
+    assert_eq!(AppMode::parse("multitask"), None);
+    assert_eq!(AppMode::parse("5"), None);
     assert_eq!(AppMode::parse("fast"), None);
+    assert_eq!(AppMode::from_setting("multitask"), AppMode::Operate);
+    assert_eq!(AppMode::from_setting("5"), AppMode::Operate);
 
     assert_eq!(AppMode::Agent.as_setting(), "agent");
     assert_eq!(AppMode::Auto.as_setting(), "agent");
+    assert_eq!(AppMode::Yolo.as_setting(), "agent");
     assert_eq!(AppMode::Plan.display_name(), "Plan");
     assert_eq!(AppMode::Auto.display_name(), "Act");
     assert_eq!(AppMode::Auto.label(), "ACT");
-    assert_eq!(AppMode::Yolo.label(), "YOLO");
+    assert_eq!(AppMode::Yolo.label(), "ACT");
+    assert_eq!(AppMode::Yolo.display_name(), "Act");
     assert_eq!(AppMode::Agent.number(), '1');
     assert_eq!(AppMode::Auto.number(), '1');
-    assert_eq!(AppMode::Yolo.number(), '4');
+    assert_eq!(AppMode::Yolo.number(), '1');
+    assert_eq!(AppMode::Operate.number(), '3');
     assert_eq!(
         AppMode::CHOICES,
-        [
-            AppMode::Agent,
-            AppMode::Plan,
-            AppMode::Multitask,
-            AppMode::Operate
-        ]
+        [AppMode::Agent, AppMode::Plan, AppMode::Operate]
     );
     assert_eq!(
         AppMode::CYCLE,
-        [
-            AppMode::Plan,
-            AppMode::Agent,
-            AppMode::Multitask,
-            AppMode::Operate
-        ]
+        [AppMode::Plan, AppMode::Agent, AppMode::Operate]
     );
 
     assert_eq!(AppMode::Plan.next(), AppMode::Agent);
-    assert_eq!(AppMode::Agent.next(), AppMode::Multitask);
-    assert_eq!(AppMode::Multitask.next(), AppMode::Operate);
+    assert_eq!(AppMode::Agent.next(), AppMode::Operate);
     assert_eq!(AppMode::Operate.next(), AppMode::Plan);
     assert_eq!(AppMode::Auto.next(), AppMode::Agent);
     assert_eq!(AppMode::Yolo.next(), AppMode::Agent);
     assert_eq!(AppMode::Plan.previous(), AppMode::Operate);
     assert_eq!(AppMode::Agent.previous(), AppMode::Plan);
-    assert_eq!(AppMode::Multitask.previous(), AppMode::Agent);
-    assert_eq!(AppMode::Operate.previous(), AppMode::Multitask);
+    assert_eq!(AppMode::Operate.previous(), AppMode::Agent);
     assert_eq!(AppMode::Auto.previous(), AppMode::Agent);
     assert_eq!(AppMode::Yolo.previous(), AppMode::Agent);
 }
@@ -1542,10 +1537,6 @@ fn test_cycle_mode_reverse_transitions() {
     assert_eq!(app.mode, AppMode::Operate);
 
     app.mode = AppMode::Operate;
-    app.cycle_mode_reverse();
-    assert_eq!(app.mode, AppMode::Multitask);
-
-    app.mode = AppMode::Multitask;
     app.cycle_mode_reverse();
     assert_eq!(app.mode, AppMode::Agent);
 
@@ -1760,9 +1751,7 @@ fn base_policy_for_mode_projects_the_mode_permission_table() {
     assert!(auto.trust_mode);
     assert_eq!(auto.approval_mode, ApprovalMode::Never);
 
-    // Multitask / Operate use the Agent baseline.
-    let multitask = base_policy_for_mode(AppMode::Multitask, &prefs);
-    assert_eq!(multitask.approval_mode, ApprovalMode::Never);
+    // Operate uses the Agent baseline.
     let operate = base_policy_for_mode(AppMode::Operate, &prefs);
     assert_eq!(operate.approval_mode, ApprovalMode::Never);
 

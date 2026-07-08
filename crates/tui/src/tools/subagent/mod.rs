@@ -4341,18 +4341,6 @@ fn apply_session_spawn_policy(
         return None;
     }
     match runtime.parent_mode {
-        AppMode::Multitask => {
-            // Background-friendly fan-out: when the operator did not specify
-            // strength or an exact model, prefer the faster sibling for parallel
-            // lookup/review children.
-            if !request.model_strength_explicit
-                && request.model.is_none()
-                && request.agent_type != SubAgentType::Explore
-            {
-                request.model_strength = SubAgentModelStrength::Faster;
-            }
-            None
-        }
         AppMode::Operate => {
             if request.profile.is_some() || request.agent_type_explicit {
                 return None;

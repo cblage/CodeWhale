@@ -302,22 +302,15 @@ impl FooterProps {
 
 fn mode_style(app: &App) -> (&'static str, Color) {
     let label = match app.mode {
-        AppMode::Agent => "act",
-        AppMode::Auto => "act",
-        AppMode::Yolo => "yolo",
+        AppMode::Agent | AppMode::Auto | AppMode::Yolo => "act",
         AppMode::Plan => "plan",
-        AppMode::Multitask => "multitask",
         AppMode::Operate => "operate",
     };
-    // Every mode gets its own badge color (dogfood A7): Operate previously
-    // borrowed the YOLO red (reads as "dangerous") and Multitask the Act
-    // blue (mode change was invisible in the footer).
+    // Visible modes get distinct badge colors (dogfood A7). YOLO is no longer
+    // a visible mode — it remaps to Act + bypass permissions.
     let color = match app.mode {
-        AppMode::Agent => app.ui_theme.mode_agent,
-        AppMode::Auto => app.ui_theme.mode_agent,
-        AppMode::Yolo => app.ui_theme.mode_yolo,
+        AppMode::Agent | AppMode::Auto | AppMode::Yolo => app.ui_theme.mode_agent,
         AppMode::Plan => app.ui_theme.mode_plan,
-        AppMode::Multitask => app.ui_theme.mode_multitask,
         AppMode::Operate => app.ui_theme.mode_operate,
     };
     (label, color)
@@ -980,8 +973,9 @@ mod tests {
         let mut app = make_app();
         let cases = [
             (AppMode::Agent, "act", palette::MODE_AGENT),
-            (AppMode::Yolo, "yolo", palette::MODE_YOLO),
+            (AppMode::Yolo, "act", palette::MODE_AGENT),
             (AppMode::Plan, "plan", palette::MODE_PLAN),
+            (AppMode::Operate, "operate", palette::MODE_OPERATE),
         ];
         for (mode, expected_label, expected_color) in cases {
             app.mode = mode;

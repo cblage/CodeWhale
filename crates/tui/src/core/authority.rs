@@ -42,7 +42,7 @@ pub(crate) struct EffectiveModePolicy {
 /// - `Plan`   -> read-only: no shell, no trust, `Suggest` approvals.
 /// - `Agent`  -> the user's durable baseline (`prefs`).
 /// - `Auto`   -> compatibility alias for Agent; not a separate behavior.
-/// - `Multitask` / `Operate` -> Agent baseline plus orchestration posture in prompts.
+/// - `Operate` -> Agent baseline plus orchestration posture in prompts.
 /// - `Yolo`   -> legacy compat; full authority: shell + trust + `Bypass` approvals.
 #[must_use]
 pub(crate) fn base_policy_for_mode(mode: AppMode, prefs: &ModeSessionPrefs) -> EffectiveModePolicy {
@@ -53,14 +53,12 @@ pub(crate) fn base_policy_for_mode(mode: AppMode, prefs: &ModeSessionPrefs) -> E
             trust_mode: false,
             approval_mode: ApprovalMode::Suggest,
         },
-        AppMode::Agent | AppMode::Auto | AppMode::Multitask | AppMode::Operate => {
-            EffectiveModePolicy {
-                mode,
-                allow_shell: prefs.agent_allow_shell,
-                trust_mode: prefs.agent_trust_mode,
-                approval_mode: prefs.agent_approval_mode,
-            }
-        }
+        AppMode::Agent | AppMode::Auto | AppMode::Operate => EffectiveModePolicy {
+            mode,
+            allow_shell: prefs.agent_allow_shell,
+            trust_mode: prefs.agent_trust_mode,
+            approval_mode: prefs.agent_approval_mode,
+        },
         AppMode::Yolo => EffectiveModePolicy {
             mode,
             allow_shell: true,
@@ -195,14 +193,12 @@ pub(crate) fn agent_approval_mode_for_turn(
 pub(crate) fn sandbox_policy_for_mode(mode: AppMode, workspace: &Path) -> SandboxPolicy {
     match mode {
         AppMode::Plan => SandboxPolicy::ReadOnly,
-        AppMode::Agent | AppMode::Auto | AppMode::Multitask | AppMode::Operate => {
-            SandboxPolicy::WorkspaceWrite {
-                writable_roots: vec![workspace.to_path_buf()],
-                network_access: true,
-                exclude_tmpdir: false,
-                exclude_slash_tmp: false,
-            }
-        }
+        AppMode::Agent | AppMode::Auto | AppMode::Operate => SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![workspace.to_path_buf()],
+            network_access: true,
+            exclude_tmpdir: false,
+            exclude_slash_tmp: false,
+        },
         AppMode::Yolo => SandboxPolicy::DangerFullAccess,
     }
 }
@@ -215,8 +211,6 @@ pub(crate) fn shell_policy_for_mode(mode: AppMode, allow_shell: bool) -> ShellPo
     }
     match mode {
         AppMode::Plan => ShellPolicy::None,
-        AppMode::Agent | AppMode::Auto | AppMode::Multitask | AppMode::Operate | AppMode::Yolo => {
-            ShellPolicy::Full
-        }
+        AppMode::Agent | AppMode::Auto | AppMode::Operate | AppMode::Yolo => ShellPolicy::Full,
     }
 }

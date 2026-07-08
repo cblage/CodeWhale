@@ -8351,10 +8351,11 @@ async fn apply_command_result(
                 if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
                     let runtime_status = query_provider_runtime_status(engine_handle).await;
                     app.view_stack.push(
-                        crate::tui::provider_picker::ProviderPickerView::new_with_runtime_status(
+                        crate::tui::provider_picker::ProviderPickerView::new_with_runtime_status_and_memory(
                             app.api_provider,
                             config,
                             runtime_status,
+                            app.provider_picker_memory.as_ref(),
                         ),
                     );
                 }
@@ -10710,6 +10711,15 @@ async fn handle_view_events(
                 app.model_picker_memory = Some(crate::tui::app::ModelPickerMemory {
                     catalog_view,
                     selected_row_id,
+                });
+            }
+            ViewEvent::ProviderPickerDismissed {
+                catalog_view,
+                selected_provider_id,
+            } => {
+                app.provider_picker_memory = Some(crate::tui::app::ProviderPickerMemory {
+                    catalog_view,
+                    selected_provider_id,
                 });
             }
             ViewEvent::ProviderPickerApplied {

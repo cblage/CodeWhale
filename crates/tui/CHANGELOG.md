@@ -20,12 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hotbar sources for MCP tools and skills: MCP tool slots prefill the
   composer (execution stays behind the normal tool-approval flow) and skill
   slots activate through the existing `$skill` alias (#2068, #2069).
-- Mode & permission surface: Tab cycles Plan → Act → Multitask → Operate;
-  Shift+Tab cycles the Agent permission posture (Ask / Auto-Review / Full
-  Access) with a footer permission chip; Ctrl+T cycles reasoning effort and
-  Ctrl+Shift+T opens the live transcript overlay. Multitask raises the
-  default sub-agent fan-out and focuses the Agents sidebar; Operate is a
-  thin Fleet-operator mode wired to `/setup` readiness.
+- Mode & permission surface: Tab cycles Plan → Act → Operate; Shift+Tab
+  cycles the Agent permission posture (Ask / Auto-Review / Full Access) with
+  a footer permission chip; Ctrl+T cycles reasoning effort and Ctrl+Shift+T
+  opens the live transcript overlay. Operate is the orchestration mode
+  (delegate, wait, inspect, dispatch) and raises sub-agent fan-out while
+  focusing the Agents sidebar.
 - Provider lake facade: the provider/model pickers, hotbar, and model
   inventory now enumerate configured providers' models from the bundled
   catalog (with an `A` toggle to browse the full catalog), replacing the
@@ -38,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `extensions/vscode/` scaffold remains the read-only Phase 0 viewer (#4035).
 
 ### Fixed
+
+- Sub-agent waiting no longer peek→sleep polls: `agent(action="wait")` joins
+  children, unchanged peeks are throttled (~30s) with an anti-polling nudge,
+  and mode prompts teach the join primitive (#4097). Harvested from PR #4098
+  by [@Mr-Moon121](https://github.com/Mr-Moon121) (Jeffrey Luna).
+- `/provider` picker remembers catalog/configured view and highlighted row
+  across reopen, matching `/model` picker memory.
+- Mode picker roster is exactly Act / Plan / Operate (no Multitask, no
+  numeric `4`/`5` gaps). Legacy `yolo`/`4` remain invisible one-way
+  permission shorthand for Act + Bypass.
 
 - Fleet setup is a role/profile roster editor, not a provider-scoped model
   picker: the Model step lists routes from every configured provider (not

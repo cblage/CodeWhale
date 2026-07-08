@@ -615,17 +615,10 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
             let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeYoloModeTip));
             let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeYoloModeCaution));
         }
-        AppMode::Multitask => {
-            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeAgentModeTip));
-            let _ = writeln!(
-                stats,
-                "  Multitask: light delegation — session model is operator; background workers"
-            );
-        }
         AppMode::Operate => {
             let _ = writeln!(
                 stats,
-                "  Operate: Fleet operator — /model route; decompose into workflow/Fleet; monitor"
+                "  Operate: coordinate workflows, spawn workers, wait on results, dispatch more work"
             );
         }
         AppMode::Plan => {
@@ -1399,7 +1392,6 @@ mod tests {
             AppMode::Auto,
             AppMode::Yolo,
             AppMode::Plan,
-            AppMode::Multitask,
             AppMode::Operate,
         ];
         for mode in modes {

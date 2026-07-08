@@ -714,7 +714,7 @@ pub const DEFAULT_HOTBAR_ACTIONS: [&str; HOTBAR_SLOT_COUNT as usize] = [
     "session.compact",
     "mode.plan",
     "mode.agent",
-    "mode.yolo",
+    "mode.operate",
     "palette.open",
     "sidebar.toggle",
     "trust.toggle",

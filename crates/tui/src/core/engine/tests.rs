@@ -3696,10 +3696,12 @@ fn mode_invariant_matrix_covers_context_catalog_subagents_and_prompt_metadata() 
             plan_hint: false,
         },
         ModeCase {
+            // YOLO remains an elevated-permission alias, but prompt/setting
+            // surfaces now speak Act (invisible one-way permission shorthand).
             name: "yolo",
             mode: AppMode::Yolo,
-            setting: "yolo",
-            prompt_marker: "##### Mode: YOLO",
+            setting: "agent",
+            prompt_marker: "##### Mode: Agent",
             shell_policy: ShellPolicy::Full,
             sandbox: ExpectedSandbox::DangerFullAccess,
             trust_mode: true,
