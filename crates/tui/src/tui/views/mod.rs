@@ -3970,7 +3970,8 @@ base_url = "https://api.xiaomimimo.com/v1"
         // The dense bottom status line must truncate on a word boundary with an
         // ellipsis instead of leaving a mid-word fragment clipped by the
         // terminal (#3987).
-        let app = create_test_app();
+        let mut app = create_test_app();
+        app.ui_locale = Locale::En;
         let mut view = ConfigView::new_for_app(&app);
         view.status = Some(
             "CFGSTATUS persisted the configuration override to disk successfully \

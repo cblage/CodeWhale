@@ -26,6 +26,7 @@ use ratatui::{
 
 use crate::config::Config;
 use crate::palette;
+use crate::localization::{MessageId, tr};
 use crate::tui::app::App;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area,
@@ -336,22 +337,13 @@ impl FleetSetupView {
             draft.model = Some(model);
             draft.provider = Some(provider);
         }
-        let (title, header) = match self.snapshot.locale {
-            crate::localization::Locale::ZhHans => (
-                format!("Fleet 配置 — 由 {model_label} 起草（按 g 批准）"),
-                format!(
-                    "# .codewhale/agents/{}\n# 由 {model_label} 起草，并由 CodeWhale 校验与限界。\n# 权限保持在 Fleet 底线：无 shell、无 trust、需审批。\n# 在向导中按 g 之前不会保存任何内容。\n\n",
-                    draft.file_name()
-                ),
-            ),
-            _ => (
-                format!("Fleet profile — draft by {model_label} (g ratifies)"),
-                format!(
-                    "# .codewhale/agents/{}\n# Drafted by {model_label}, validated and bounded by CodeWhale.\n# Permissions stay at the fleet floor: no shell, no trust, approval required.\n# Nothing is saved until you press g in the wizard.\n\n",
-                    draft.file_name()
-                ),
-            ),
-        };
+        let (title, header) = (
+            tr(self.snapshot.locale, MessageId::FleetDraftTitle)
+                .replace("{model_label}", &model_label),
+            tr(self.snapshot.locale, MessageId::FleetDraftHeader)
+                .replace("{name}", &draft.file_name())
+                .replace("{model_label}", &model_label),
+        );
         let content = format!("{header}{}", draft.render_toml());
         self.model_draft = Some(draft);
         self.model_draft_label = Some(model_label);
@@ -477,16 +469,8 @@ impl FleetSetupView {
     /// ratify keypress, forcing an Esc-then-g round trip to actually save.
     fn preview_starter_profile_action(&mut self) -> ViewAction {
         let draft = self.starter_profile_draft();
-        let header = match self.snapshot.locale {
-            crate::localization::Locale::ZhHans => format!(
-                "# .codewhale/agents/{}\n# CodeWhale 根据当前角色和模型选择确定性渲染。\n# 权限保持在 Fleet 底线：无 shell、无 trust、需审批。\n# 在向导中按 Enter 或 g 之前不会保存任何内容。\n\n",
-                draft.file_name()
-            ),
-            _ => format!(
-                "# .codewhale/agents/{}\n# Deterministic starter profile rendered by CodeWhale from your role/model choices.\n# Permissions stay at the fleet floor: no shell, no trust, approval required.\n# Nothing is saved until you press Enter or g in the wizard.\n\n",
-                draft.file_name()
-            ),
-        };
+        let header = tr(self.snapshot.locale, MessageId::FleetPreviewHeader)
+            .replace("{name}", &draft.file_name());
         self.model_draft_preview = Some(format!("{header}{}", draft.render_toml()));
         self.model_draft = Some(draft);
         self.model_draft_label = Some("CodeWhale starter".to_string());

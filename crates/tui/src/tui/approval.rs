@@ -27,13 +27,14 @@
 //! happen *before* the view is constructed (see `tui/ui.rs`); this
 //! module always assumes the user is being asked.
 
-use crate::localization::Locale;
+use crate::localization::{Locale, MessageId, tr};
 use crate::sandbox::SandboxPolicy;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, ElevationWidget, Renderable};
 use codewhale_config::ToolAskRule;
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -554,17 +555,16 @@ fn build_impact_summary(tool_name: &str, category: ToolCategory, params: &Value)
 }
 
 fn localized_description_zh_hans(category: ToolCategory) -> String {
+    let locale = Locale::ZhHans;
     match category {
-        ToolCategory::Safe => "请求执行只读操作。".to_string(),
-        ToolCategory::FileWrite => "请求修改文件。请确认路径和内容符合预期。".to_string(),
-        ToolCategory::Shell => "请求执行 shell 命令。请先检查命令和工作目录。".to_string(),
-        ToolCategory::Network => "请求访问网络或远程内容。请确认目标可信。".to_string(),
-        ToolCategory::McpRead => "请求从 MCP 服务器读取信息。".to_string(),
-        ToolCategory::McpAction => "请求调用 MCP 服务器操作，可能产生副作用。".to_string(),
-        ToolCategory::Agent => {
-            "请求启动或查看子代理任务；子代理仍受其自身工具门控约束。".to_string()
-        }
-        ToolCategory::Unknown => "请求运行未分类工具。批准前请仔细检查参数。".to_string(),
+        ToolCategory::Safe => tr(locale, MessageId::ApprovalDescSafe).to_string(),
+        ToolCategory::FileWrite => tr(locale, MessageId::ApprovalDescFileWrite).to_string(),
+        ToolCategory::Shell => tr(locale, MessageId::ApprovalDescShell).to_string(),
+        ToolCategory::Network => tr(locale, MessageId::ApprovalDescNetwork).to_string(),
+        ToolCategory::McpRead => tr(locale, MessageId::ApprovalDescMcpRead).to_string(),
+        ToolCategory::McpAction => tr(locale, MessageId::ApprovalDescMcpAction).to_string(),
+        ToolCategory::Agent => tr(locale, MessageId::ApprovalDescAgent).to_string(),
+        ToolCategory::Unknown => tr(locale, MessageId::ApprovalDescUnknown).to_string(),
     }
 }
 
@@ -573,26 +573,28 @@ fn build_impact_summary_zh_hans(
     category: ToolCategory,
     params: &Value,
 ) -> Vec<String> {
+    let locale = Locale::ZhHans;
     match category {
         ToolCategory::Safe => {
-            let mut impacts = vec!["只读操作。".to_string()];
+            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactSafe).to_string()];
             if let Some(path) = param_preview(params, &["path", "ref_id", "uri"], 72) {
                 impacts.push(format!("读取：{path}"));
             }
             impacts
         }
         ToolCategory::FileWrite => {
-            let mut impacts = vec!["会写入工作区或已批准写入范围内的文件。".to_string()];
+            let mut impacts =
+                vec![tr(locale, MessageId::ApprovalImpactFileWrite).to_string()];
             if let Some(path) = param_preview(params, &["path", "target", "destination"], 72) {
                 impacts.push(format!("写入：{path}"));
             }
             impacts
         }
         ToolCategory::Shell => {
-            vec!["在工作区执行 Bash 命令。".to_string()]
+            vec![tr(locale, MessageId::ApprovalImpactShell).to_string()]
         }
         ToolCategory::Network => {
-            let mut impacts = vec!["可能访问网络服务或远程内容。".to_string()];
+            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactNetwork).to_string()];
             if let Some(target) =
                 param_preview(params, &["url", "q", "query", "location", "repo"], 96)
             {
@@ -601,29 +603,30 @@ fn build_impact_summary_zh_hans(
             impacts
         }
         ToolCategory::McpRead => {
-            let mut impacts = vec!["从 MCP 服务器读取信息，不应产生本地写入。".to_string()];
+            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactMcpRead).to_string()];
             if let Some(target) = mcp_target_hint(tool_name) {
                 impacts.push(format!("MCP 目标：{target}"));
             }
             impacts
         }
         ToolCategory::McpAction => {
-            let mut impacts = vec!["调用可能产生副作用的 MCP 服务器操作。".to_string()];
+            let mut impacts =
+                vec![tr(locale, MessageId::ApprovalImpactMcpAction).to_string()];
             if let Some(target) = mcp_target_hint(tool_name) {
                 impacts.push(format!("MCP 目标：{target}"));
             }
             impacts
         }
         ToolCategory::Agent => {
-            let mut impacts =
-                vec!["启动或查看子代理任务；子代理仍受其自身工具门控约束。".to_string()];
+            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactAgent).to_string()];
             if let Some(kind) = param_preview(params, &["type"], 40) {
                 impacts.push(format!("子代理类型：{kind}"));
             }
             impacts
         }
         ToolCategory::Unknown => {
-            let mut impacts = vec!["工具未分类。批准前请仔细检查参数。".to_string()];
+            let mut impacts =
+                vec![tr(locale, MessageId::ApprovalImpactUnknown).to_string()];
             if let Some(target) = param_preview(
                 params,
                 &["path", "cmd", "command", "url", "q", "query", "ref_id"],
@@ -912,36 +915,36 @@ fn param_text(params: &Value, keys: &[&str]) -> Option<String> {
     None
 }
 
-fn localize_detail_label(label: &str, locale: Locale) -> &str {
+fn localize_detail_label(label: &str, locale: Locale) -> Cow<'static, str> {
     match locale {
         Locale::ZhHans => match label {
-            "Command" => "命令",
-            "Dir" => "目录",
-            "File" => "文件",
-            "Preview" => "预览",
-            "proposed content" => "拟写入内容",
-            "replace this" => "替换此内容",
-            "with this" => "替换为",
-            "replacement content" => "替换内容",
-            "Path" => "路径",
-            "Target" => "目标",
-            "Input" => "输入",
-            "Action" => "操作",
-            "Type" => "类型",
-            "Prompt" => "提示",
-            _ => label,
+            "Command" => tr(locale, MessageId::ApprovalLabelCommand),
+            "Dir" => tr(locale, MessageId::ApprovalLabelDir),
+            "File" => tr(locale, MessageId::ApprovalLabelFile),
+            "Preview" => tr(locale, MessageId::ApprovalLabelPreview),
+            "proposed content" => tr(locale, MessageId::ApprovalLabelProposedContent),
+            "replace this" => tr(locale, MessageId::ApprovalLabelReplaceThis),
+            "with this" => tr(locale, MessageId::ApprovalLabelWithThis),
+            "replacement content" => tr(locale, MessageId::ApprovalLabelReplacementContent),
+            "Path" => tr(locale, MessageId::ApprovalLabelPath),
+            "Target" => tr(locale, MessageId::ApprovalLabelTarget),
+            "Input" => tr(locale, MessageId::ApprovalLabelInput),
+            "Action" => tr(locale, MessageId::ApprovalLabelAction),
+            "Type" => tr(locale, MessageId::ApprovalLabelType),
+            "Prompt" => tr(locale, MessageId::ApprovalLabelPrompt),
+            _ => label.to_string().into(),
         },
-        _ => label,
+        _ => label.to_string().into(),
     }
 }
 
-fn localize_preview_shell_line<'a>(tool_name: &str, line: &'a str, locale: Locale) -> &'a str {
+fn localize_preview_shell_line(tool_name: &str, line: &str, locale: Locale) -> Cow<'static, str> {
     match tool_name {
         "write_file" if line == "proposed content" => localize_detail_label(line, locale),
         "edit_file" if matches!(line, "replace this" | "with this") => {
             localize_detail_label(line, locale)
         }
-        _ => line,
+        _ => line.to_string().into(),
     }
 }
 
@@ -1257,16 +1260,14 @@ impl ApprovalView {
         // The compact prompt keeps the about/impact dossier out of the
         // default band; the pager is where that context now lives.
         let locale = self.locale();
-        let (about_label, impact_label) = match locale {
-            Locale::ZhHans => ("说明：", "影响："),
-            _ => ("About: ", "Impact: "),
-        };
+        let about_label = tr(locale, MessageId::ApprovalLabelAbout);
+        let impact_label = tr(locale, MessageId::ApprovalLabelImpact);
         let mut content = String::new();
-        content.push_str(about_label);
+        content.push_str(&about_label);
         content.push_str(&self.request.description_for_locale(locale));
         content.push('\n');
         for impact in self.request.impacts_for_locale(locale) {
-            content.push_str(impact_label);
+            content.push_str(&impact_label);
             content.push_str(&impact);
             content.push('\n');
         }

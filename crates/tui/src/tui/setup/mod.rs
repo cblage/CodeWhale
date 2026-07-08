@@ -430,15 +430,7 @@ impl SetupRuntimeFacts {
                     autonomy_label(constitution.autonomy_preference, app.ui_locale).to_string()
                 })
             })
-            .unwrap_or_else(|| match app.ui_locale {
-                Locale::Ja => "未指定、または組み込み基準を使用".to_string(),
-                Locale::ZhHans => "未指定或使用内置准则".to_string(),
-                Locale::ZhHant => "未指定或使用內建準則".to_string(),
-                Locale::PtBr => "não especificado ou usando o padrão embutido".to_string(),
-                Locale::Es419 => "sin especificar o usando el criterio integrado".to_string(),
-                Locale::Vi => "chưa chỉ định hoặc dùng chuẩn tích hợp".to_string(),
-                _ => "unspecified or bundled/default".to_string(),
-            });
+            .unwrap_or_else(|| tr(app.ui_locale, MessageId::SetupAutonomyUnspecified).to_string());
         Self {
             provider,
             model,
@@ -644,158 +636,23 @@ impl SetupConstitutionFileState {
         }
     }
 
-    fn label(self, choice: ConstitutionChoice, locale: Locale) -> &'static str {
-        match locale {
-            Locale::Ja => self.ja_label(choice),
-            Locale::ZhHans => self.zh_hans_label(choice),
-            Locale::ZhHant => self.zh_hant_label(choice),
-            Locale::PtBr => self.pt_br_label(choice),
-            Locale::Es419 => self.es_419_label(choice),
-            Locale::Vi => self.vi_label(choice),
-            _ => self.english_label(choice),
-        }
-    }
-
-    fn english_label(self, choice: ConstitutionChoice) -> &'static str {
-        match self {
-            Self::NotChecked => "not checked yet",
-            Self::Missing => "no constitution.json found; bundled/default applies",
+    fn label(self, choice: ConstitutionChoice, locale: Locale) -> Cow<'static, str> {
+        let id = match self {
+            Self::NotChecked => MessageId::SetupConstitutionFileNotChecked,
+            Self::Missing => MessageId::SetupConstitutionFileMissing,
             Self::Loaded if choice == ConstitutionChoice::GuidedCustom => {
-                "valid constitution.json present and selected"
+                MessageId::SetupConstitutionFileLoadedSelected
             }
             Self::Loaded if choice.is_explicit() => {
-                "valid constitution.json present but inactive under the recorded choice"
+                MessageId::SetupConstitutionFileLoadedInactive
             }
-            Self::Loaded => "valid constitution.json present; preview or save guided to select it",
-            Self::Empty => "constitution.json is empty; use G to regenerate or U for bundled",
-            Self::Invalid => "constitution.json is invalid; use repair/regenerate or bundled",
-            Self::Unreadable => "constitution.json is unreadable; use repair/regenerate or bundled",
-            Self::PathError => "CODEWHALE_HOME could not be resolved for constitution.json",
-        }
-    }
-
-    fn zh_hans_label(self, choice: ConstitutionChoice) -> &'static str {
-        match self {
-            Self::NotChecked => "尚未检查",
-            Self::Missing => "未找到 constitution.json；使用内置/默认准则",
-            Self::Loaded if choice == ConstitutionChoice::GuidedCustom => {
-                "有效 constitution.json 已存在并已选择"
-            }
-            Self::Loaded if choice.is_explicit() => {
-                "有效 constitution.json 已存在，但当前记录选择使其不生效"
-            }
-            Self::Loaded => "有效 constitution.json 已存在；预览或保存引导式宪法即可选择",
-            Self::Empty => "constitution.json 为空；按 G 重新生成或按 U 使用内置",
-            Self::Invalid => "constitution.json 无效；请修复/重新生成，或使用内置",
-            Self::Unreadable => "constitution.json 无法读取；请修复/重新生成，或使用内置",
-            Self::PathError => "无法解析 CODEWHALE_HOME 中的 constitution.json",
-        }
-    }
-
-    fn ja_label(self, choice: ConstitutionChoice) -> &'static str {
-        match self {
-            Self::NotChecked => "未確認",
-            Self::Missing => "constitution.json がありません。組み込み/既定の基準を使用します",
-            Self::Loaded if choice == ConstitutionChoice::GuidedCustom => {
-                "有効な constitution.json があり、選択済みです"
-            }
-            Self::Loaded if choice.is_explicit() => {
-                "有効な constitution.json はありますが、現在の記録された選択では非アクティブです"
-            }
-            Self::Loaded => "有効な constitution.json があります。プレビューまたは保存で選択します",
-            Self::Empty => "constitution.json は空です。G で再生成、U で組み込みを使用します",
-            Self::Invalid => {
-                "constitution.json が無効です。修復/再生成するか、組み込みを使用します"
-            }
-            Self::Unreadable => {
-                "constitution.json を読めません。修復/再生成するか、組み込みを使用します"
-            }
-            Self::PathError => "CODEWHALE_HOME の constitution.json を解決できません",
-        }
-    }
-
-    fn zh_hant_label(self, choice: ConstitutionChoice) -> &'static str {
-        match self {
-            Self::NotChecked => "尚未檢查",
-            Self::Missing => "未找到 constitution.json；使用內建/預設準則",
-            Self::Loaded if choice == ConstitutionChoice::GuidedCustom => {
-                "有效 constitution.json 已存在並已選取"
-            }
-            Self::Loaded if choice.is_explicit() => {
-                "有效 constitution.json 已存在，但目前記錄的選擇使其不生效"
-            }
-            Self::Loaded => "有效 constitution.json 已存在；預覽或保存引導式憲法即可選取",
-            Self::Empty => "constitution.json 為空；按 G 重新生成或按 U 使用內建",
-            Self::Invalid => "constitution.json 無效；請修復/重新生成，或使用內建",
-            Self::Unreadable => "constitution.json 無法讀取；請修復/重新生成，或使用內建",
-            Self::PathError => "無法解析 CODEWHALE_HOME 中的 constitution.json",
-        }
-    }
-
-    fn pt_br_label(self, choice: ConstitutionChoice) -> &'static str {
-        match self {
-            Self::NotChecked => "ainda não verificado",
-            Self::Missing => "constitution.json não encontrado; usa o padrão embutido",
-            Self::Loaded if choice == ConstitutionChoice::GuidedCustom => {
-                "constitution.json válido presente e selecionado"
-            }
-            Self::Loaded if choice.is_explicit() => {
-                "constitution.json válido presente, mas inativo pela escolha registrada"
-            }
-            Self::Loaded => {
-                "constitution.json válido presente; pré-visualize ou salve para selecioná-lo"
-            }
-            Self::Empty => "constitution.json vazio; use G para regenerar ou U para o embutido",
-            Self::Invalid => "constitution.json inválido; repare/regere ou use o embutido",
-            Self::Unreadable => "constitution.json ilegível; repare/regere ou use o embutido",
-            Self::PathError => "não foi possível resolver constitution.json em CODEWHALE_HOME",
-        }
-    }
-
-    fn es_419_label(self, choice: ConstitutionChoice) -> &'static str {
-        match self {
-            Self::NotChecked => "aún no revisado",
-            Self::Missing => "no se encontró constitution.json; se usa el criterio integrado",
-            Self::Loaded if choice == ConstitutionChoice::GuidedCustom => {
-                "constitution.json válido presente y seleccionado"
-            }
-            Self::Loaded if choice.is_explicit() => {
-                "constitution.json válido presente, pero inactivo por la elección registrada"
-            }
-            Self::Loaded => {
-                "constitution.json válido presente; previsualiza o guarda para seleccionarlo"
-            }
-            Self::Empty => {
-                "constitution.json está vacío; usa G para regenerar o U para el integrado"
-            }
-            Self::Invalid => "constitution.json no es válido; repara/regenera o usa el integrado",
-            Self::Unreadable => {
-                "constitution.json no se puede leer; repara/regenera o usa el integrado"
-            }
-            Self::PathError => "no se pudo resolver constitution.json en CODEWHALE_HOME",
-        }
-    }
-
-    fn vi_label(self, choice: ConstitutionChoice) -> &'static str {
-        match self {
-            Self::NotChecked => "chưa kiểm tra",
-            Self::Missing => "không tìm thấy constitution.json; dùng chuẩn tích hợp/mặc định",
-            Self::Loaded if choice == ConstitutionChoice::GuidedCustom => {
-                "constitution.json hợp lệ đã có và đã chọn"
-            }
-            Self::Loaded if choice.is_explicit() => {
-                "constitution.json hợp lệ đã có nhưng chưa hoạt động theo lựa chọn đã ghi"
-            }
-            Self::Loaded => {
-                "constitution.json hợp lệ đã có; xem trước hoặc lưu bản hướng dẫn để chọn"
-            }
-            Self::Empty => "constitution.json trống; dùng G để tạo lại hoặc U để dùng bản tích hợp",
-            Self::Invalid => "constitution.json không hợp lệ; sửa/tạo lại hoặc dùng bản tích hợp",
-            Self::Unreadable => {
-                "không đọc được constitution.json; sửa/tạo lại hoặc dùng bản tích hợp"
-            }
-            Self::PathError => "không thể xác định constitution.json trong CODEWHALE_HOME",
-        }
+            Self::Loaded => MessageId::SetupConstitutionFileLoadedUnselected,
+            Self::Empty => MessageId::SetupConstitutionFileEmpty,
+            Self::Invalid => MessageId::SetupConstitutionFileInvalid,
+            Self::Unreadable => MessageId::SetupConstitutionFileUnreadable,
+            Self::PathError => MessageId::SetupConstitutionFilePathError,
+        };
+        tr(locale, id)
     }
 }
 
@@ -829,140 +686,16 @@ impl SetupExpertOverrideState {
     }
 
     fn label(self, locale: Locale) -> Cow<'static, str> {
-        match locale {
-            Locale::Ja => self.ja_label(),
-            Locale::ZhHans => self.zh_hans_label(),
-            Locale::ZhHant => self.zh_hant_label(),
-            Locale::PtBr => self.pt_br_label(),
-            Locale::Es419 => self.es_419_label(),
-            Locale::Vi => self.vi_label(),
-            _ => self.english_label(),
-        }
-    }
-
-    fn english_label(self) -> Cow<'static, str> {
         match self {
-            Self::NotChecked => Cow::Borrowed("not checked yet"),
-            Self::Missing => Cow::Borrowed("no prompts/constitution.md found"),
-            Self::Active => Cow::Borrowed("active; expert Markdown override is opted in"),
-            Self::Disabled => Cow::Owned(format!(
-                "file found but disabled; set {BASE_PROMPT_OVERRIDE_OPT_IN_ENV}=1 to activate"
-            )),
-            Self::Empty => Cow::Borrowed("override file is empty; bundled/default applies"),
-            Self::Unreadable => {
-                Cow::Borrowed("override file is unreadable; bundled/default applies")
-            }
-            Self::PathError => {
-                Cow::Borrowed("CODEWHALE_HOME could not be resolved for prompts/constitution.md")
-            }
-        }
-    }
-
-    fn zh_hans_label(self) -> Cow<'static, str> {
-        match self {
-            Self::NotChecked => Cow::Borrowed("尚未检查"),
-            Self::Missing => Cow::Borrowed("未找到 prompts/constitution.md"),
-            Self::Active => Cow::Borrowed("已启用；专家 Markdown 覆盖已选择加入"),
-            Self::Disabled => Cow::Owned(format!(
-                "已找到文件但未启用；设置 {BASE_PROMPT_OVERRIDE_OPT_IN_ENV}=1 后生效"
-            )),
-            Self::Empty => Cow::Borrowed("覆盖文件为空；使用内置/默认准则"),
-            Self::Unreadable => Cow::Borrowed("覆盖文件无法读取；使用内置/默认准则"),
-            Self::PathError => {
-                Cow::Borrowed("无法解析 CODEWHALE_HOME 中的 prompts/constitution.md")
-            }
-        }
-    }
-
-    fn ja_label(self) -> Cow<'static, str> {
-        match self {
-            Self::NotChecked => Cow::Borrowed("未確認"),
-            Self::Missing => Cow::Borrowed("prompts/constitution.md がありません"),
-            Self::Active => {
-                Cow::Borrowed("有効です。専門家向け Markdown 上書きがオプトインされています")
-            }
-            Self::Disabled => Cow::Owned(format!(
-                "ファイルはありますが無効です。有効化には {BASE_PROMPT_OVERRIDE_OPT_IN_ENV}=1 を設定してください"
-            )),
-            Self::Empty => Cow::Borrowed("上書きファイルは空です。組み込み/既定の基準を使用します"),
-            Self::Unreadable => {
-                Cow::Borrowed("上書きファイルを読めません。組み込み/既定の基準を使用します")
-            }
-            Self::PathError => {
-                Cow::Borrowed("CODEWHALE_HOME の prompts/constitution.md を解決できません")
-            }
-        }
-    }
-
-    fn zh_hant_label(self) -> Cow<'static, str> {
-        match self {
-            Self::NotChecked => Cow::Borrowed("尚未檢查"),
-            Self::Missing => Cow::Borrowed("未找到 prompts/constitution.md"),
-            Self::Active => Cow::Borrowed("已啟用；專家 Markdown 覆寫已選擇加入"),
-            Self::Disabled => Cow::Owned(format!(
-                "已找到檔案但未啟用；設定 {BASE_PROMPT_OVERRIDE_OPT_IN_ENV}=1 後生效"
-            )),
-            Self::Empty => Cow::Borrowed("覆寫檔案為空；使用內建/預設準則"),
-            Self::Unreadable => Cow::Borrowed("覆寫檔案無法讀取；使用內建/預設準則"),
-            Self::PathError => {
-                Cow::Borrowed("無法解析 CODEWHALE_HOME 中的 prompts/constitution.md")
-            }
-        }
-    }
-
-    fn pt_br_label(self) -> Cow<'static, str> {
-        match self {
-            Self::NotChecked => Cow::Borrowed("ainda não verificado"),
-            Self::Missing => Cow::Borrowed("prompts/constitution.md não encontrado"),
-            Self::Active => Cow::Borrowed("ativo; override Markdown especialista com opt-in"),
-            Self::Disabled => Cow::Owned(format!(
-                "arquivo encontrado, mas desativado; defina {BASE_PROMPT_OVERRIDE_OPT_IN_ENV}=1 para ativar"
-            )),
-            Self::Empty => Cow::Borrowed("arquivo de override vazio; usa o padrão embutido"),
-            Self::Unreadable => {
-                Cow::Borrowed("arquivo de override ilegível; usa o padrão embutido")
-            }
-            Self::PathError => {
-                Cow::Borrowed("não foi possível resolver prompts/constitution.md em CODEWHALE_HOME")
-            }
-        }
-    }
-
-    fn es_419_label(self) -> Cow<'static, str> {
-        match self {
-            Self::NotChecked => Cow::Borrowed("aún no revisado"),
-            Self::Missing => Cow::Borrowed("no se encontró prompts/constitution.md"),
-            Self::Active => Cow::Borrowed("activo; override Markdown experto con opt-in"),
-            Self::Disabled => Cow::Owned(format!(
-                "archivo encontrado, pero desactivado; define {BASE_PROMPT_OVERRIDE_OPT_IN_ENV}=1 para activarlo"
-            )),
-            Self::Empty => Cow::Borrowed("archivo de override vacío; usa el criterio integrado"),
-            Self::Unreadable => {
-                Cow::Borrowed("archivo de override ilegible; usa el criterio integrado")
-            }
-            Self::PathError => {
-                Cow::Borrowed("no se pudo resolver prompts/constitution.md en CODEWHALE_HOME")
-            }
-        }
-    }
-
-    fn vi_label(self) -> Cow<'static, str> {
-        match self {
-            Self::NotChecked => Cow::Borrowed("chưa kiểm tra"),
-            Self::Missing => Cow::Borrowed("không tìm thấy prompts/constitution.md"),
-            Self::Active => {
-                Cow::Borrowed("đang hoạt động; override Markdown chuyên gia đã bật opt-in")
-            }
-            Self::Disabled => Cow::Owned(format!(
-                "đã tìm thấy tệp nhưng chưa bật; đặt {BASE_PROMPT_OVERRIDE_OPT_IN_ENV}=1 để kích hoạt"
-            )),
-            Self::Empty => Cow::Borrowed("tệp override trống; dùng chuẩn tích hợp/mặc định"),
-            Self::Unreadable => {
-                Cow::Borrowed("không đọc được tệp override; dùng chuẩn tích hợp/mặc định")
-            }
-            Self::PathError => {
-                Cow::Borrowed("không thể xác định prompts/constitution.md trong CODEWHALE_HOME")
-            }
+            Self::NotChecked => tr(locale, MessageId::SetupExpertOverrideNotChecked),
+            Self::Missing => tr(locale, MessageId::SetupExpertOverrideMissing),
+            Self::Active => tr(locale, MessageId::SetupExpertOverrideActive),
+            Self::Disabled => tr(locale, MessageId::SetupExpertOverrideDisabled)
+                .replace("{env}", BASE_PROMPT_OVERRIDE_OPT_IN_ENV)
+                .into(),
+            Self::Empty => tr(locale, MessageId::SetupExpertOverrideEmpty),
+            Self::Unreadable => tr(locale, MessageId::SetupExpertOverrideUnreadable),
+            Self::PathError => tr(locale, MessageId::SetupExpertOverridePathError),
         }
     }
 }
@@ -1069,78 +802,16 @@ impl GuidedConstitutionDraft {
     }
 
     fn notes(self, locale: Locale) -> String {
-        match locale {
-            Locale::Ja => format!(
-                "ガイド回答：用途={}；主体性={}；証拠={}；コミュニケーション={}；プライバシー={}；原則={}。{} 自由記入の原則は助言であり、承認、サンドボックス、Shell、ネットワーク、信頼、MCP 権限を変更しません。",
-                self.purpose.label(locale),
-                autonomy_label(self.autonomy, locale),
-                self.evidence.label(locale),
-                self.communication.label(locale),
-                self.privacy.label(locale),
-                self.principles.label(locale),
-                self.principles.note(locale)
-            ),
-            Locale::ZhHans => format!(
-                "引导式答案：用途={}；主动性={}；证据={}；沟通={}；隐私={}；原则={}。{} 自由文本原则只作为建议，不会改变审批、沙箱、Shell、网络、信任或 MCP 权限。",
-                self.purpose.label(locale),
-                autonomy_label(self.autonomy, locale),
-                self.evidence.label(locale),
-                self.communication.label(locale),
-                self.privacy.label(locale),
-                self.principles.label(locale),
-                self.principles.note(locale)
-            ),
-            Locale::ZhHant => format!(
-                "引導式答案：用途={}；主動性={}；證據={}；溝通={}；隱私={}；原則={}。{} 自由文字原則只作為建議，不會改變審批、沙箱、Shell、網路、信任或 MCP 權限。",
-                self.purpose.label(locale),
-                autonomy_label(self.autonomy, locale),
-                self.evidence.label(locale),
-                self.communication.label(locale),
-                self.privacy.label(locale),
-                self.principles.label(locale),
-                self.principles.note(locale)
-            ),
-            Locale::PtBr => format!(
-                "Respostas guiadas: propósito={}; iniciativa={}; evidência={}; comunicação={}; privacidade={}; princípios={}. {} Princípios livres são orientações e não alteram aprovação, sandbox, shell, rede, confiança nem permissões MCP.",
-                self.purpose.label(locale),
-                autonomy_label(self.autonomy, locale),
-                self.evidence.label(locale),
-                self.communication.label(locale),
-                self.privacy.label(locale),
-                self.principles.label(locale),
-                self.principles.note(locale)
-            ),
-            Locale::Es419 => format!(
-                "Respuestas guiadas: propósito={}; iniciativa={}; evidencia={}; comunicación={}; privacidad={}; principios={}. {} Los principios libres son orientación y no cambian aprobación, sandbox, shell, red, confianza ni permisos MCP.",
-                self.purpose.label(locale),
-                autonomy_label(self.autonomy, locale),
-                self.evidence.label(locale),
-                self.communication.label(locale),
-                self.privacy.label(locale),
-                self.principles.label(locale),
-                self.principles.note(locale)
-            ),
-            Locale::Vi => format!(
-                "Câu trả lời hướng dẫn: mục đích={}; chủ động={}; bằng chứng={}; giao tiếp={}; riêng tư={}; nguyên tắc={}. {} Nguyên tắc tự do chỉ là hướng dẫn và không thay đổi phê duyệt, sandbox, shell, mạng, độ tin cậy hoặc quyền MCP.",
-                self.purpose.label(locale),
-                autonomy_label(self.autonomy, locale),
-                self.evidence.label(locale),
-                self.communication.label(locale),
-                self.privacy.label(locale),
-                self.principles.label(locale),
-                self.principles.note(locale)
-            ),
-            _ => format!(
-                "Guided answers: purpose={}; initiative={}; evidence={}; communication={}; privacy={}; principles={}. {} Freeform principles are advisory and do not change approval, sandbox, shell, network, trust, or MCP permissions.",
-                self.purpose.label(locale),
-                autonomy_label(self.autonomy, locale),
-                self.evidence.label(locale),
-                self.communication.label(locale),
-                self.privacy.label(locale),
-                self.principles.label(locale),
-                self.principles.note(locale)
-            ),
-        }
+        let notes = tr(locale, MessageId::SetupGuidedNotes);
+        notes
+            .replace("{purpose}", &self.purpose.label(locale))
+            .replace("{initiative}", &autonomy_label(self.autonomy, locale))
+            .replace("{evidence}", &self.evidence.label(locale))
+            .replace("{communication}", &self.communication.label(locale))
+            .replace("{privacy}", &self.privacy.label(locale))
+            .replace("{principles}", &self.principles.label(locale))
+            .replace("{notes}", &self.principles.note(locale))
+            .to_string()
     }
 }
 
@@ -1162,202 +833,30 @@ impl GuidedPurpose {
         }
     }
 
-    fn label(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::Coding) => "コーディング作業台",
-            (Locale::Ja, Self::Research) => "調査統合",
-            (Locale::Ja, Self::Operations) => "運用支援",
-            (Locale::Ja, Self::Mixed) => "混合作業台",
-            (Locale::ZhHans, Self::Coding) => "编码工作台",
-            (Locale::ZhHans, Self::Research) => "研究综合",
-            (Locale::ZhHans, Self::Operations) => "运维协作",
-            (Locale::ZhHans, Self::Mixed) => "混合工作台",
-            (Locale::ZhHant, Self::Coding) => "編碼工作台",
-            (Locale::ZhHant, Self::Research) => "研究整合",
-            (Locale::ZhHant, Self::Operations) => "營運協作",
-            (Locale::ZhHant, Self::Mixed) => "混合工作台",
-            (Locale::PtBr, Self::Coding) => "bancada de código",
-            (Locale::PtBr, Self::Research) => "síntese de pesquisa",
-            (Locale::PtBr, Self::Operations) => "apoio operacional",
-            (Locale::PtBr, Self::Mixed) => "bancada mista",
-            (Locale::Es419, Self::Coding) => "mesa de código",
-            (Locale::Es419, Self::Research) => "síntesis de investigación",
-            (Locale::Es419, Self::Operations) => "apoyo operativo",
-            (Locale::Es419, Self::Mixed) => "mesa mixta",
-            (Locale::Vi, Self::Coding) => "bàn làm việc mã",
-            (Locale::Vi, Self::Research) => "tổng hợp nghiên cứu",
-            (Locale::Vi, Self::Operations) => "hỗ trợ vận hành",
-            (Locale::Vi, Self::Mixed) => "bàn làm việc hỗn hợp",
-            (_, Self::Coding) => "coding workbench",
-            (_, Self::Research) => "research synthesis",
-            (_, Self::Operations) => "operations helper",
-            (_, Self::Mixed) => "mixed workbench",
+    fn label(self, locale: Locale) -> Cow<'static, str> {
+        match self {
+            Self::Coding => tr(locale, MessageId::SetupGuidedPurposeCoding),
+            Self::Research => tr(locale, MessageId::SetupGuidedPurposeResearch),
+            Self::Operations => tr(locale, MessageId::SetupGuidedPurposeOperations),
+            Self::Mixed => tr(locale, MessageId::SetupGuidedPurposeMixed),
         }
     }
 
-    fn about(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::Coding) => {
-                "CodeWhale を落ち着いた証拠重視のコーディング作業台として使いたいユーザー。"
-            }
-            (Locale::Ja, Self::Research) => {
-                "CodeWhale に最新資料、引用、慎重な調査統合を支援してほしいユーザー。"
-            }
-            (Locale::Ja, Self::Operations) => {
-                "CodeWhale に信頼できる運用支援、明確なロールバック地点、リスク説明を求めるユーザー。"
-            }
-            (Locale::Ja, Self::Mixed) => {
-                "CodeWhale をコーディング、調査、執筆、運用に柔軟に使いたいユーザー。"
-            }
-            (Locale::ZhHans, Self::Coding) => "希望 CodeWhale 成为稳健、重证据的编码工作台用户。",
-            (Locale::ZhHans, Self::Research) => {
-                "希望 CodeWhale 帮助梳理实时资料、引用证据并谨慎综合研究的用户。"
-            }
-            (Locale::ZhHans, Self::Operations) => {
-                "希望 CodeWhale 协助可靠执行运维任务、保留回滚点并明确风险的用户。"
-            }
-            (Locale::ZhHans, Self::Mixed) => {
-                "希望 CodeWhale 在编码、研究、写作和运维之间灵活切换的用户。"
-            }
-            (Locale::ZhHant, Self::Coding) => "希望 CodeWhale 成為穩健、重證據的編碼工作台使用者。",
-            (Locale::ZhHant, Self::Research) => {
-                "希望 CodeWhale 協助整理即時資料、引用證據並謹慎整合研究的使用者。"
-            }
-            (Locale::ZhHant, Self::Operations) => {
-                "希望 CodeWhale 協助可靠執行營運任務、保留回復點並明確說明風險的使用者。"
-            }
-            (Locale::ZhHant, Self::Mixed) => {
-                "希望 CodeWhale 在編碼、研究、寫作和營運之間彈性切換的使用者。"
-            }
-            (Locale::PtBr, Self::Coding) => {
-                "Usuário que quer o CodeWhale como uma bancada de código calma e guiada por evidências."
-            }
-            (Locale::PtBr, Self::Research) => {
-                "Usuário que quer pesquisa atual com citações e síntese cuidadosa."
-            }
-            (Locale::PtBr, Self::Operations) => {
-                "Usuário que quer ajuda operacional confiável, com pontos claros de reversão."
-            }
-            (Locale::PtBr, Self::Mixed) => {
-                "Usuário que quer uma bancada flexível para código, pesquisa, escrita e operações."
-            }
-            (Locale::Es419, Self::Coding) => {
-                "Usuario que quiere a CodeWhale como una mesa de código tranquila y basada en evidencia."
-            }
-            (Locale::Es419, Self::Research) => {
-                "Usuario que quiere investigación actual, citada y sintetizada con cuidado."
-            }
-            (Locale::Es419, Self::Operations) => {
-                "Usuario que quiere ayuda operativa confiable con puntos claros de reversión."
-            }
-            (Locale::Es419, Self::Mixed) => {
-                "Usuario que quiere una mesa flexible para código, investigación, escritura y operaciones."
-            }
-            (Locale::Vi, Self::Coding) => {
-                "Người dùng muốn CodeWhale là bàn làm việc mã điềm tĩnh, ưu tiên bằng chứng."
-            }
-            (Locale::Vi, Self::Research) => {
-                "Người dùng muốn nghiên cứu cập nhật, có trích dẫn và tổng hợp thận trọng."
-            }
-            (Locale::Vi, Self::Operations) => {
-                "Người dùng muốn hỗ trợ vận hành tin cậy với điểm hoàn nguyên rõ ràng."
-            }
-            (Locale::Vi, Self::Mixed) => {
-                "Người dùng muốn bàn làm việc linh hoạt cho mã, nghiên cứu, viết và vận hành."
-            }
-            (_, Self::Coding) => {
-                "A CodeWhale user who wants a calm, evidence-first coding workbench."
-            }
-            (_, Self::Research) => {
-                "A CodeWhale user who wants current, cited research and careful synthesis."
-            }
-            (_, Self::Operations) => {
-                "A CodeWhale user who wants reliable operational help with clear rollback points."
-            }
-            (_, Self::Mixed) => {
-                "A CodeWhale user who wants a flexible workbench for coding, research, writing, and operations."
-            }
+    fn about(self, locale: Locale) -> Cow<'static, str> {
+        match self {
+            Self::Coding => tr(locale, MessageId::SetupGuidedPurposeAboutCoding),
+            Self::Research => tr(locale, MessageId::SetupGuidedPurposeAboutResearch),
+            Self::Operations => tr(locale, MessageId::SetupGuidedPurposeAboutOperations),
+            Self::Mixed => tr(locale, MessageId::SetupGuidedPurposeAboutMixed),
         }
     }
 
-    fn working_style(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::Coding) => {
-                "コード変更は依頼内容、既存のリポジトリ慣習、検証可能な挙動に合わせる。"
-            }
-            (Locale::Ja, Self::Research) => {
-                "ライブ証拠と推論を分け、変わりやすい事実には出典を示す。"
-            }
-            (Locale::Ja, Self::Operations) => {
-                "ドライラン、状態確認、ロールバック説明を伴う可逆的な運用手順を優先する。"
-            }
-            (Locale::Ja, Self::Mixed) => {
-                "コーディング、調査、執筆、運用を切り替えても、安全姿勢を不用意に広げない。"
-            }
-            (Locale::ZhHans, Self::Coding) => "让代码改动贴近请求、仓库模式和可验证行为。",
-            (Locale::ZhHans, Self::Research) => "区分实时证据与推断，并为易变事实引用来源。",
-            (Locale::ZhHans, Self::Operations) => {
-                "优先使用可逆运维步骤、预演、状态检查和回滚说明。"
-            }
-            (Locale::ZhHans, Self::Mixed) => {
-                "可在编码、研究、写作和运维之间切换，但安全姿态不随意扩大。"
-            }
-            (Locale::ZhHant, Self::Coding) => "讓程式碼改動貼近請求、倉庫模式和可驗證行為。",
-            (Locale::ZhHant, Self::Research) => "區分即時證據與推論，並為易變事實引用來源。",
-            (Locale::ZhHant, Self::Operations) => {
-                "優先使用可逆營運步驟、預演、狀態檢查和回復說明。"
-            }
-            (Locale::ZhHant, Self::Mixed) => {
-                "可在編碼、研究、寫作和營運之間切換，但安全姿態不隨意擴大。"
-            }
-            (Locale::PtBr, Self::Coding) => {
-                "Mantenha mudanças de código alinhadas ao pedido, aos padrões do repo e ao comportamento verificável."
-            }
-            (Locale::PtBr, Self::Research) => {
-                "Separe evidência ao vivo de inferência e cite fontes para fatos instáveis."
-            }
-            (Locale::PtBr, Self::Operations) => {
-                "Prefira passos operacionais reversíveis com dry-runs, checagens de estado e notas de rollback."
-            }
-            (Locale::PtBr, Self::Mixed) => {
-                "Alterne entre código, pesquisa, escrita e operações sem ampliar a postura de segurança."
-            }
-            (Locale::Es419, Self::Coding) => {
-                "Mantén los cambios de código alineados con el pedido, los patrones del repo y el comportamiento verificable."
-            }
-            (Locale::Es419, Self::Research) => {
-                "Separa evidencia en vivo de inferencia y cita fuentes para hechos inestables."
-            }
-            (Locale::Es419, Self::Operations) => {
-                "Prefiere pasos operativos reversibles con dry-runs, revisiones de estado y notas de rollback."
-            }
-            (Locale::Es419, Self::Mixed) => {
-                "Alterna entre código, investigación, escritura y operaciones sin ampliar la postura de seguridad."
-            }
-            (Locale::Vi, Self::Coding) => {
-                "Giữ thay đổi mã bám sát yêu cầu, mẫu của repo và hành vi có thể xác minh."
-            }
-            (Locale::Vi, Self::Research) => {
-                "Tách bằng chứng trực tiếp khỏi suy luận và trích nguồn cho sự kiện dễ thay đổi."
-            }
-            (Locale::Vi, Self::Operations) => {
-                "Ưu tiên bước vận hành có thể đảo ngược với dry-run, kiểm tra trạng thái và ghi chú rollback."
-            }
-            (Locale::Vi, Self::Mixed) => {
-                "Chuyển giữa mã, nghiên cứu, viết và vận hành mà không mở rộng tư thế an toàn."
-            }
-            (_, Self::Coding) => {
-                "Keep code changes scoped to requested behavior and existing repo patterns."
-            }
-            (_, Self::Research) => {
-                "Separate live evidence from inference and cite sources for unstable facts."
-            }
-            (_, Self::Operations) => {
-                "Prefer reversible operational steps with dry-runs, status checks, and rollback notes."
-            }
-            (_, Self::Mixed) => {
-                "Adapt between coding, research, writing, and operations without widening the safety posture."
-            }
+    fn working_style(self, locale: Locale) -> Cow<'static, str> {
+        match self {
+            Self::Coding => tr(locale, MessageId::SetupGuidedStyleCoding),
+            Self::Research => tr(locale, MessageId::SetupGuidedStyleResearch),
+            Self::Operations => tr(locale, MessageId::SetupGuidedStyleOperations),
+            Self::Mixed => tr(locale, MessageId::SetupGuidedStyleMixed),
         }
     }
 }
@@ -1378,29 +877,11 @@ impl GuidedEvidence {
         }
     }
 
-    fn label(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::Assumptions) => "前提を示す",
-            (Locale::Ja, Self::TestsAndReceipts) => "テスト/証跡",
-            (Locale::Ja, Self::ReleaseReceipts) => "リリース証跡",
-            (Locale::ZhHans, Self::Assumptions) => "说明假设",
-            (Locale::ZhHans, Self::TestsAndReceipts) => "测试/凭据",
-            (Locale::ZhHans, Self::ReleaseReceipts) => "发布凭据",
-            (Locale::ZhHant, Self::Assumptions) => "說明假設",
-            (Locale::ZhHant, Self::TestsAndReceipts) => "測試/憑據",
-            (Locale::ZhHant, Self::ReleaseReceipts) => "發布憑據",
-            (Locale::PtBr, Self::Assumptions) => "declarar premissas",
-            (Locale::PtBr, Self::TestsAndReceipts) => "testes/recibos",
-            (Locale::PtBr, Self::ReleaseReceipts) => "recibos de release",
-            (Locale::Es419, Self::Assumptions) => "declarar supuestos",
-            (Locale::Es419, Self::TestsAndReceipts) => "pruebas/recibos",
-            (Locale::Es419, Self::ReleaseReceipts) => "recibos de release",
-            (Locale::Vi, Self::Assumptions) => "nêu giả định",
-            (Locale::Vi, Self::TestsAndReceipts) => "kiểm thử/biên nhận",
-            (Locale::Vi, Self::ReleaseReceipts) => "biên nhận phát hành",
-            (_, Self::Assumptions) => "assumptions",
-            (_, Self::TestsAndReceipts) => "tests/receipts",
-            (_, Self::ReleaseReceipts) => "release receipts",
+    fn label(self, locale: Locale) -> Cow<'static, str> {
+        match self {
+            Self::Assumptions => tr(locale, MessageId::SetupGuidedEvidenceAssumptions),
+            Self::TestsAndReceipts => tr(locale, MessageId::SetupGuidedEvidenceTestsAndReceipts),
+            Self::ReleaseReceipts => tr(locale, MessageId::SetupGuidedEvidenceReleaseReceipts),
         }
     }
 
@@ -3074,7 +2555,7 @@ impl SetupWizardView {
             self.detail_row(MessageId::SetupConstitutionChoiceLabel, choice),
             self.detail_row(MessageId::SetupConstitutionSourceLabel, &source_state),
             self.detail_row(MessageId::SetupConstitutionPreviewLabel, &preview),
-            self.detail_row(MessageId::SetupConstitutionExistingLabel, existing_file),
+            self.detail_row(MessageId::SetupConstitutionExistingLabel, &existing_file),
             self.detail_row(
                 MessageId::SetupConstitutionExpertOverrideLabel,
                 &expert_override,
@@ -3087,7 +2568,7 @@ impl SetupWizardView {
                 (
                     "1",
                     MessageId::SetupConstitutionPurposeLabel,
-                    self.guided_draft.purpose.label(self.locale),
+                    &self.guided_draft.purpose.label(self.locale),
                 ),
                 (
                     "2",
@@ -3099,7 +2580,7 @@ impl SetupWizardView {
                 (
                     "3",
                     MessageId::SetupConstitutionEvidenceLabel,
-                    self.guided_draft.evidence.label(self.locale),
+                    &self.guided_draft.evidence.label(self.locale),
                 ),
                 (
                     "4",
@@ -4816,7 +4297,7 @@ mod tests {
             panic!("expected remote on-ramp pager");
         };
         assert_eq!(title, "Remote runtime on-ramp");
-        assert!(content.contains("does not generate bundles"));
+        assert!(content.contains("does not generate deploy bundles"));
         assert!(content.contains("codewhale remote-setup --generate-only"));
         assert!(content.contains("`--apply` remains unimplemented"));
     }
@@ -4843,7 +4324,7 @@ mod tests {
 
         assert!(content.contains("--provider openrouter"), "{content}");
         assert!(!content.contains("--provider deepseek"), "{content}");
-        assert!(content.contains("does not generate bundles"), "{content}");
+        assert!(content.contains("does not generate deploy bundles"), "{content}");
         assert!(
             content.contains("`--apply` remains unimplemented"),
             "{content}"
@@ -5472,7 +4953,7 @@ mod tests {
             let view = SetupWizardView::new(SetupState::default(), locale);
             let text = lines_to_text(view.constitution_detail_lines());
             assert!(
-                text.contains(GuidedPurpose::Coding.label(locale)),
+                text.contains(&*GuidedPurpose::Coding.label(locale)),
                 "missing localized purpose answer for {}",
                 locale.tag()
             );

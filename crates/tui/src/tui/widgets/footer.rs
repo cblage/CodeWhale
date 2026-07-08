@@ -191,14 +191,12 @@ pub fn footer_agents_chip(running: usize, locale: Locale) -> Vec<Span<'static>> 
 /// reuses [`crate::tui::notifications::humanize_duration`] for
 /// consistent w/d/h/m formatting.
 #[must_use]
-pub fn footer_worked_chip(elapsed: std::time::Duration) -> Vec<Span<'static>> {
+pub fn footer_worked_chip(elapsed: std::time::Duration, locale: Locale) -> Vec<Span<'static>> {
     if elapsed < std::time::Duration::from_secs(60) {
         return Vec::new();
     }
-    let label = format!(
-        "worked {}",
-        crate::tui::notifications::humanize_duration(elapsed)
-    );
+    let label = tr(locale, MessageId::FooterWorkedChip)
+        .replace("{duration}", &crate::tui::notifications::humanize_duration(elapsed));
     vec![Span::styled(
         label,
         Style::default().fg(palette::TEXT_MUTED),
@@ -274,7 +272,7 @@ impl FooterProps {
         // that's been open and idle for 4 minutes shouldn't claim
         // "worked 4m". The chip stays empty until enough turns add up
         // to cross the 60s threshold inside `footer_worked_chip`.
-        let worked = footer_worked_chip(app.cumulative_turn_duration);
+        let worked = footer_worked_chip(app.cumulative_turn_duration, app.ui_locale);
         Self {
             model: app.model_display_label(),
             mode_label,
@@ -828,6 +826,9 @@ mod tests {
         // (`humanize_duration` keeps both units when both are non-zero,
         // so 90s renders as `1m 30s`, not `1m`.)
         app.cumulative_turn_duration = std::time::Duration::from_secs(90);
+
+        // Pin the locale to English so the assertion below is deterministic.
+        app.ui_locale = crate::localization::Locale::En;
         let props = idle_props_for(&app);
         let text: String = props
             .worked
@@ -841,7 +842,7 @@ mod tests {
     fn footer_worked_chip_hidden_below_one_minute() {
         use std::time::Duration;
         for secs in [0, 1, 30, 59] {
-            let chip = super::footer_worked_chip(Duration::from_secs(secs));
+            let chip = super::footer_worked_chip(Duration::from_secs(secs), Locale::En);
             assert!(
                 chip.is_empty(),
                 "worked chip must be hidden at {secs}s; got {chip:?}"
@@ -853,17 +854,17 @@ mod tests {
     fn footer_worked_chip_shows_humanized_label_above_threshold() {
         use std::time::Duration;
         // 1 minute on the dot — boundary, must render.
-        let chip = super::footer_worked_chip(Duration::from_secs(60));
+        let chip = super::footer_worked_chip(Duration::from_secs(60), Locale::En);
         let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "worked 1m");
 
         // 3h 12m — the issue's golden example.
-        let chip = super::footer_worked_chip(Duration::from_secs(11_550));
+        let chip = super::footer_worked_chip(Duration::from_secs(11_550), Locale::En);
         let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "worked 3h 12m");
 
         // Multi-day session — exercises the d/h band.
-        let chip = super::footer_worked_chip(Duration::from_secs(2 * 86_400 + 5 * 3600));
+        let chip = super::footer_worked_chip(Duration::from_secs(2 * 86_400 + 5 * 3600), Locale::En);
         let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "worked 2d 5h");
     }
