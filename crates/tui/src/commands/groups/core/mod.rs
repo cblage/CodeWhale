@@ -45,8 +45,8 @@ use crate::commands::traits::{Command, CommandGroup, FunctionCommand, RegisterCo
 pub struct CoreCommands;
 
 impl CommandGroup for CoreCommands {
-    fn commands(&self) -> Vec<Box<dyn Command>> {
-        vec![
+    fn commands(&self) -> &'static [Box<dyn Command>] {
+        cached_command_list!(vec![
             Box::new(FunctionCommand::new(
                 anchor::AnchorCmd::info(),
                 anchor::AnchorCmd::execute,
@@ -160,6 +160,6 @@ impl CommandGroup for CoreCommands {
                 voice::VoiceControlCmd::info(),
                 voice::VoiceControlCmd::execute,
             )),
-        ]
+        ])
     }
 }

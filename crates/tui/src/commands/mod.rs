@@ -85,7 +85,7 @@ static REGISTRY: OnceLock<traits::CommandRegistry> = OnceLock::new();
 
 fn build_registry() -> traits::CommandRegistry {
     let mut registry = traits::CommandRegistry::empty();
-    for group in groups::all_command_groups() {
+    for &group in groups::all_command_groups() {
         registry.register_group(group);
     }
     registry
@@ -608,13 +608,13 @@ mod tests {
         let mut total_commands = 0;
         let mut has_config = false;
         let mut has_debug = false;
-        for group in &groups {
+        for &group in groups {
             let commands = group.commands();
             assert!(
                 !commands.is_empty(),
                 "each group must have at least one command"
             );
-            for cmd in &commands {
+            for cmd in commands {
                 let info = cmd.info();
                 assert!(!info.name.is_empty(), "command name must not be empty");
                 assert!(
@@ -674,6 +674,25 @@ mod tests {
             command_infos().len(),
             "group-iterated command count must match registry infos count"
         );
+    }
+
+    #[test]
+    fn command_groups_are_cached_once() {
+        let first_groups = groups::all_command_groups();
+        let second_groups = groups::all_command_groups();
+        assert!(
+            std::ptr::eq(first_groups.as_ptr(), second_groups.as_ptr()),
+            "command group list should be cached"
+        );
+
+        for &group in first_groups {
+            let first_commands = group.commands();
+            let second_commands = group.commands();
+            assert!(
+                std::ptr::eq(first_commands.as_ptr(), second_commands.as_ptr()),
+                "command list should be cached per group"
+            );
+        }
     }
 
     #[test]

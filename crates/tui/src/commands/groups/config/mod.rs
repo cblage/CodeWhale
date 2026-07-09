@@ -15,8 +15,8 @@ use crate::tui::app::App;
 pub struct ConfigCommands;
 
 impl CommandGroup for ConfigCommands {
-    fn commands(&self) -> Vec<Box<dyn Command>> {
-        vec![
+    fn commands(&self) -> &'static [Box<dyn Command>] {
+        cached_command_list!(vec![
             Box::new(FunctionCommand::new(&CONFIG_INFO, run_config)),
             Box::new(FunctionCommand::new(&SIDEBAR_INFO, run_sidebar)),
             Box::new(FunctionCommand::new(&SETTINGS_INFO, run_settings)),
@@ -28,7 +28,7 @@ impl CommandGroup for ConfigCommands {
             Box::new(FunctionCommand::new(&TRUST_INFO, run_trust)),
             Box::new(FunctionCommand::new(&LOGOUT_INFO, run_logout)),
             Box::new(FunctionCommand::new(&DEBT_INFO, run_debt)),
-        ]
+        ])
     }
 }
 

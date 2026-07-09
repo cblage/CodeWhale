@@ -130,7 +130,7 @@ pub trait Command: Send + Sync {
 }
 
 pub trait CommandGroup: Send + Sync {
-    fn commands(&self) -> Vec<Box<dyn Command>>;
+    fn commands(&self) -> &'static [Box<dyn Command>];
 }
 
 pub(crate) type CommandHandler = fn(&mut App, Option<&str>) -> CommandResult;
@@ -166,7 +166,7 @@ impl Command for FunctionCommand {
 }
 
 pub struct CommandRegistry {
-    commands: Vec<Box<dyn Command>>,
+    commands: Vec<&'static dyn Command>,
     name_to_index: HashMap<&'static str, usize>,
 }
 
@@ -178,7 +178,7 @@ impl CommandRegistry {
         }
     }
 
-    pub fn register(&mut self, command: Box<dyn Command>) {
+    pub fn register(&mut self, command: &'static dyn Command) {
         let index = self.commands.len();
         let info = command.info();
         self.name_to_index.insert(info.name, index);
@@ -190,7 +190,7 @@ impl CommandRegistry {
 
     pub fn register_group(&mut self, group: &dyn CommandGroup) {
         for command in group.commands() {
-            self.register(command);
+            self.register(command.as_ref());
         }
     }
 
@@ -199,7 +199,7 @@ impl CommandRegistry {
         self.name_to_index
             .get(name)
             .and_then(|index| self.commands.get(*index))
-            .map(Box::as_ref)
+            .copied()
     }
 
     pub fn get_info(&self, name: &str) -> Option<&'static CommandInfo> {
@@ -207,7 +207,7 @@ impl CommandRegistry {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &dyn Command> {
-        self.commands.iter().map(Box::as_ref)
+        self.commands.iter().copied()
     }
 
     pub fn infos(&self) -> Vec<&'static CommandInfo> {

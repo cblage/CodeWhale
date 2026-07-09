@@ -19,11 +19,11 @@ use crate::tui::app::App;
 pub struct PluginsCommands;
 
 impl CommandGroup for PluginsCommands {
-    fn commands(&self) -> Vec<Box<dyn Command>> {
-        vec![Box::new(FunctionCommand::new(
+    fn commands(&self) -> &'static [Box<dyn Command>] {
+        cached_command_list!(vec![Box::new(FunctionCommand::new(
             PluginsCmd::info(),
             PluginsCmd::execute,
-        ))]
+        ))])
     }
 }
 

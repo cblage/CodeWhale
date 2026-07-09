@@ -18,8 +18,8 @@ use crate::tui::app::App;
 pub struct DebugCommands;
 
 impl CommandGroup for DebugCommands {
-    fn commands(&self) -> Vec<Box<dyn Command>> {
-        vec![
+    fn commands(&self) -> &'static [Box<dyn Command>] {
+        cached_command_list!(vec![
             Box::new(FunctionCommand::new(&TOKENS_INFO, run_tokens)),
             Box::new(FunctionCommand::new(&COST_INFO, run_cost)),
             Box::new(FunctionCommand::new(&BALANCE_INFO, run_balance)),
@@ -31,7 +31,7 @@ impl CommandGroup for DebugCommands {
             Box::new(FunctionCommand::new(&DIFF_INFO, run_diff)),
             Box::new(FunctionCommand::new(&UNDO_INFO, run_undo)),
             Box::new(FunctionCommand::new(&RETRY_INFO, run_retry)),
-        ]
+        ])
     }
 }
 
