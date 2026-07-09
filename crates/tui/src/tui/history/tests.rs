@@ -212,8 +212,14 @@ fn workflow_tool_expanded_card_shows_phase_child_result_and_failures() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(joined.contains("ship v0.8.68"), "goal: {joined}");
-    assert!(joined.contains("phases:") || joined.contains("Verify"), "phase: {joined}");
-    assert!(joined.contains("children:") || joined.contains("child"), "child: {joined}");
+    assert!(
+        joined.contains("phases:") || joined.contains("Verify"),
+        "phase: {joined}"
+    );
+    assert!(
+        joined.contains("children:") || joined.contains("child"),
+        "child: {joined}"
+    );
     assert!(joined.contains("run tests"), "child label: {joined}");
     assert!(
         joined.contains("result:") || joined.contains("2 of 3"),

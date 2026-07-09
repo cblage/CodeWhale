@@ -1834,7 +1834,8 @@ mod tests {
         assert_eq!(row.label, "typed-label");
     }
 
-        fn compact_history_card_summarizes_lifecycle_children_phases_failures_elapsed() {
+    #[test]
+    fn compact_history_card_summarizes_lifecycle_children_phases_failures_elapsed() {
         let mut panel = started_panel();
         panel.apply_event(WorkflowPanelEvent::TaskCompleted {
             task_id: "t1".to_string(),

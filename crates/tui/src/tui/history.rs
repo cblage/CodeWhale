@@ -1648,7 +1648,6 @@ impl GenericToolCell {
                 ));
             }
         }
-        }
         Some(wrap_card_rail(lines))
     }
 }
