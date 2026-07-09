@@ -3261,6 +3261,53 @@ mod tests {
     }
 
     #[test]
+    fn agent_mode_prompt_teaches_automatic_workflow_use() {
+        // #4125: parent decides Workflow without the user saying the word;
+        // indicates the shape and may ask setup questions before launch.
+        let prompt = AGENT_MODE;
+        for phrase in [
+            "You decide when to use Workflow",
+            "need **not** say \"workflow\"",
+            "broad, independent, or staged",
+            "This looks set up for a Workflow",
+            "`request_user_input`",
+            "TUI question modal",
+            "Pass **paths**, not file contents",
+            "Prefer `responseSchema`",
+            "one compact summary",
+        ] {
+            assert!(
+                prompt.contains(phrase),
+                "AGENT_MODE missing automatic-workflow phrase {phrase:?}"
+            );
+        }
+        // Explicitly not the old opt-in-only framing.
+        assert!(
+            !prompt.contains("The `workflow` tool is opt-in"),
+            "AGENT_MODE must not describe Workflow as opt-in only"
+        );
+    }
+
+    #[test]
+    fn operate_mode_prompt_prefers_workflow_plan_over_handwritten_files() {
+        // #4125 companion: Operate mode matches soft-auto Workflow guidance.
+        for phrase in [
+            "Decide to use Workflow yourself",
+            "does not need to say \"workflow\"",
+            "This looks like a Workflow",
+            "do not ask the operator to write workflow files",
+            "Pass **paths** not file dumps",
+            "Prefer `responseSchema`",
+            "labels and phase titles",
+        ] {
+            assert!(
+                OPERATE_MODE.contains(phrase),
+                "OPERATE_MODE missing automatic-workflow phrase {phrase:?}"
+            );
+        }
+    }
+
+    #[test]
     fn subagent_done_sentinel_section_present() {
         assert!(AGENT_MODE.contains("<codewhale:subagent.done>"));
         assert!(AGENT_MODE.contains("not user input"));
