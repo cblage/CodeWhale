@@ -1604,10 +1604,7 @@ async fn approval_required_awaits_external_decision_allow() -> Result<()> {
         })
         .await?;
 
-    // A busy or constrained runner can be quiet for more than one 200 ms poll
-    // even though the engine is still making progress. Keep polling until the
-    // actual deadline instead of treating the first quiet interval as failure.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline && manager.pending_approvals_count() == 0 {
         sleep(Duration::from_millis(20)).await;
     }
@@ -1705,7 +1702,10 @@ async fn approval_required_external_deny_is_denied() -> Result<()> {
         })
         .await?;
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // A busy or constrained runner can be quiet for more than one 200 ms poll
+    // even though the engine is still making progress. Keep polling until the
+    // actual deadline instead of treating the first quiet interval as failure.
+    let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline && manager.pending_approvals_count() == 0 {
         sleep(Duration::from_millis(20)).await;
     }
