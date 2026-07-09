@@ -3,9 +3,17 @@
 //! Soft-auto model: the **agent** decides to use Workflow without the operator
 //! saying the word "workflow". Policy here answers "should we orchestrate?" —
 //! the parent prompt still **tells the operator** the intended shape and may
-//! ask setup questions before calling `workflow` / `plan`.
+//! ask setup questions via `request_user_input` (TUI modal) before calling
+//! `workflow` / `plan`.
 //!
-//! Pure decision helper; does not start workflows itself.
+//! Pure decision helper; does not start workflows itself. Public API is live for
+//! unit tests and upcoming runtime wiring — keep reachable from non-test builds
+//! via [`soft_auto_policy_is_linked`].
+
+// Soft-auto policy is consulted primarily by the model (prompt) and tests today;
+// runtime auto-launch will call [`evaluate_workflow_trigger`] next. Until then,
+// private helpers trip `dead_code` on bin builds under `-D warnings`.
+#![allow(dead_code)]
 
 /// Signals the parent can supply without full conversation replay.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -283,6 +291,19 @@ fn has_independent_verification_language(lower: &str) -> bool {
         "independent review",
     ];
     NEEDLES.iter().any(|n| lower.contains(n))
+}
+
+/// Reachability probe so the soft-auto surface stays linked in release builds.
+///
+/// Returns `true` when a canonical fan-out ask would trigger Workflow under
+/// product defaults (used by registry/tool wiring smoke tests).
+#[must_use]
+pub fn soft_auto_policy_is_linked() -> bool {
+    evaluate_workflow_trigger(
+        "audit every crate for unsafe blocks",
+        &WorkflowTriggerSignals::product_defaults(),
+    )
+    .should_trigger()
 }
 
 #[cfg(test)]
