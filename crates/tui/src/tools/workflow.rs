@@ -10,10 +10,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use codewhale_workflow::{
-    AgentType, BranchResult, BranchSpec, BudgetSpec, ControlNodeKind, ControlNodeResult, LeafResult,
-    LeafSpec, ReduceSpec, SequenceSpec, TaskMode, WorkflowExecution as IrWorkflowExecution,
-    WorkflowMemoUsage, WorkflowNode, WorkflowRunStatus as IrWorkflowRunStatus, WorkflowSpec,
-    WorkflowUsage, compile_javascript_workflow, compile_typescript_workflow, leaf_wants_worktree,
+    AgentType, BranchResult, BranchSpec, BudgetSpec, ControlNodeKind, ControlNodeResult,
+    LeafResult, LeafSpec, ReduceSpec, SequenceSpec, TaskMode,
+    WorkflowExecution as IrWorkflowExecution, WorkflowMemoUsage, WorkflowNode,
+    WorkflowRunStatus as IrWorkflowRunStatus, WorkflowSpec, WorkflowUsage,
+    compile_javascript_workflow, compile_typescript_workflow, leaf_wants_worktree,
 };
 use codewhale_workflow_js::{
     BudgetSnapshot, DriverError, ProgressEvent, SpawnedTask, TaskCompletion, TaskRequest,
@@ -2356,8 +2357,7 @@ export default workflow({
             adapted.source
         );
         assert!(
-            adapted.source.contains("shared-writer")
-                && adapted.source.contains("isolated-writer"),
+            adapted.source.contains("shared-writer") && adapted.source.contains("isolated-writer"),
             "both children should still be lowered:\n{}",
             adapted.source
         );
