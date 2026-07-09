@@ -2178,7 +2178,8 @@ impl ModalView for ConfigView {
             (lines, self.tr(MessageId::ConfigEditFooter).to_string())
         } else {
             let content_height = usize::from(inner.height);
-            let header_lines = 5usize;
+            // Title, subtitle, search, blank, column headers, separator.
+            let header_lines = 6usize;
             let bottom_lines = 1usize;
             // The action footer now lives inside the modal body (reserved by
             // `render_modal_text_footer` below) rather than on the border, so it

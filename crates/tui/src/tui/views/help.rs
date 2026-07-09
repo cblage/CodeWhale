@@ -596,7 +596,9 @@ mod tests {
     #[test]
     fn backspace_widens_match_set() {
         let mut view = HelpView::new();
-        type_filter(&mut view, "yolox");
+        // Near-miss against the still-visible mode vocabulary so the last
+        // character removes a unique miss and broadens the match set.
+        type_filter(&mut view, "modez");
         let narrow = view.filtered.len();
         view.handle_key(key(KeyCode::Backspace));
         let wider = view.filtered.len();
@@ -609,7 +611,7 @@ mod tests {
     #[test]
     fn ctrl_h_widens_match_set() {
         let mut view = HelpView::new();
-        type_filter(&mut view, "yolox");
+        type_filter(&mut view, "modez");
         let narrow = view.filtered.len();
         view.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
         let wider = view.filtered.len();
