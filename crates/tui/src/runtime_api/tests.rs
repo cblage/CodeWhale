@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::ApiProvider;
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::Op;
 use crate::models::Usage;
@@ -1226,6 +1227,7 @@ async fn fleet_status_runtime_api_exposes_state_and_actions() -> Result<()> {
             session_name: Some("runtime-api-fleet-worker".to_string()),
             objective: "Inspect fleet status through Runtime API".to_string(),
             role: Some("status-reviewer".to_string()),
+            profile: Some("reviewer".to_string()),
             agent_type: SubAgentType::Review,
             model: "auto".to_string(),
             workspace: workspace.clone(),
@@ -1381,6 +1383,7 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
             session_name: Some("receipt_lane".to_string()),
             objective: "Verify run receipt projection".to_string(),
             role: Some("verifier".to_string()),
+            profile: Some("verifier".to_string()),
             agent_type: SubAgentType::Verifier,
             model: "deepseek-v4-flash".to_string(),
             workspace: workspace.clone(),
@@ -1495,6 +1498,7 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
         .json()
         .await?;
     assert_eq!(runs["runs"][0]["spec"]["run_id"], "run_receipt");
+    assert_eq!(runs["runs"][0]["spec"]["profile"], "verifier");
     assert_eq!(runs["runs"][0]["follow_up"]["tool"], "handle_read");
     assert_eq!(
         runs["runs"][0]["verification"]["status"],
@@ -1509,6 +1513,7 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
         .json()
         .await?;
     assert_eq!(run["spec"]["worker_id"], "agent_receipt");
+    assert_eq!(run["spec"]["profile"], "verifier");
     assert_eq!(run["takeover"]["supported"], true);
     assert_eq!(run["artifacts"][0]["kind"], "transcript");
 
@@ -1518,6 +1523,175 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
         .await?
         .status();
     assert_eq!(missing, StatusCode::NOT_FOUND);
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancel_agent_run_endpoint_targets_active_thread_engine() -> Result<()> {
+    let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    let created: Value = client
+        .post(format!("http://{addr}/v1/threads"))
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"].as_str().context("missing thread id")?;
+    let endpoint = format!("http://{addr}/v1/threads/{thread_id}/agent-runs/agent_target/cancel");
+
+    let unloaded = client.post(&endpoint).send().await?;
+    assert_eq!(unloaded.status(), StatusCode::CONFLICT);
+
+    let mut harness = crate::core::engine::mock_engine_handle();
+    runtime_threads
+        .install_test_engine(thread_id, harness.handle.clone())
+        .await?;
+
+    let response = client.post(&endpoint).send().await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body: Value = response.json().await?;
+    assert_eq!(body["accepted"], true);
+    assert_eq!(body["thread_id"], thread_id);
+    assert_eq!(body["agent_id"], "agent_target");
+
+    match tokio::time::timeout(Duration::from_secs(1), harness.rx_op.recv()).await {
+        Ok(Some(Op::CancelSubAgent { agent_id })) => assert_eq!(agent_id, "agent_target"),
+        other => panic!("expected targeted CancelSubAgent op, got {other:?}"),
+    }
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn nudge_agent_runs_endpoint_is_internal_coalesced_and_idle_safe() -> Result<()> {
+    let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    let created: Value = client
+        .post(format!("http://{addr}/v1/threads"))
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"]
+        .as_str()
+        .context("missing thread id")?
+        .to_string();
+    let mut harness = crate::core::engine::mock_engine_handle();
+    runtime_threads
+        .install_test_engine(&thread_id, harness.handle.clone())
+        .await?;
+
+    let started: Value = client
+        .post(format!("http://{addr}/v1/threads/{thread_id}/turns"))
+        .json(&json!({ "prompt": "coordinate background agents" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let turn_id = started["turn"]["id"]
+        .as_str()
+        .context("missing turn id")?
+        .to_string();
+    assert!(matches!(
+        harness.rx_op.recv().await,
+        Some(Op::SendMessage { .. })
+    ));
+
+    let endpoint = format!("http://{addr}/v1/threads/{thread_id}/agent-runs/nudge");
+    let first = client
+        .post(&endpoint)
+        .json(&json!({ "agent_ids": ["agent_b", "agent_a", "agent_b"] }))
+        .send()
+        .await?;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first_body: Value = first.json().await?;
+    assert_eq!(first_body["accepted"], true);
+    assert_eq!(first_body["coalesced"], false);
+    assert_eq!(first_body["thread_id"], thread_id);
+    assert_eq!(first_body["turn_id"], turn_id);
+    assert_eq!(first_body["agent_ids"], json!(["agent_a", "agent_b"]));
+
+    let duplicate = client
+        .post(&endpoint)
+        .json(&json!({ "agent_ids": ["agent_a"] }))
+        .send()
+        .await?;
+    assert_eq!(duplicate.status(), StatusCode::ACCEPTED);
+    let duplicate_body: Value = duplicate.json().await?;
+    assert_eq!(duplicate_body["accepted"], false);
+    assert_eq!(duplicate_body["coalesced"], true);
+
+    let input = tokio::time::timeout(Duration::from_secs(1), harness.rx_steer.recv())
+        .await?
+        .context("missing runtime nudge")?;
+    assert_eq!(
+        input.provenance,
+        crate::core::ops::UserInputProvenance::Runtime
+    );
+    assert!(input.content.contains("kind=\"subagent_watchdog\""));
+    drop(input);
+
+    let invalid = client
+        .post(&endpoint)
+        .json(&json!({ "agent_ids": ["bad agent id"] }))
+        .send()
+        .await?;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+    let idle_created: Value = client
+        .post(format!("http://{addr}/v1/threads"))
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let idle_thread_id = idle_created["id"]
+        .as_str()
+        .context("missing idle thread id")?;
+    let mut idle_harness = crate::core::engine::mock_engine_handle();
+    runtime_threads
+        .install_test_engine(idle_thread_id, idle_harness.handle.clone())
+        .await?;
+    let idle = client
+        .post(format!(
+            "http://{addr}/v1/threads/{idle_thread_id}/agent-runs/nudge"
+        ))
+        .json(&json!({ "agent_ids": ["agent_idle"] }))
+        .send()
+        .await?;
+    assert_eq!(idle.status(), StatusCode::ACCEPTED);
+    let idle_body: Value = idle.json().await?;
+    assert_eq!(idle_body["accepted"], true);
+    assert_eq!(idle_body["coalesced"], false);
+    assert_eq!(idle_body["thread_id"], idle_thread_id);
+    assert_eq!(idle_body["agent_ids"], json!(["agent_idle"]));
+
+    match tokio::time::timeout(Duration::from_secs(1), idle_harness.rx_op.recv()).await {
+        Ok(Some(Op::SendMessage {
+            content,
+            provenance,
+            ..
+        })) => {
+            assert_eq!(provenance, crate::core::ops::UserInputProvenance::Runtime);
+            assert!(content.contains("kind=\"subagent_watchdog\""));
+        }
+        other => panic!("expected durable idle watchdog turn, got {other:?}"),
+    }
 
     handle.abort();
     Ok(())
@@ -1536,6 +1710,154 @@ async fn stream_requires_prompt() -> Result<()> {
         .send()
         .await?;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_context_endpoint_and_sse_event_report_raw_occupancy() -> Result<()> {
+    let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    let created: Value = client
+        .post(format!("http://{addr}/v1/threads"))
+        .json(&json!({ "model": DEFAULT_TEXT_MODEL }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"]
+        .as_str()
+        .context("missing thread id")?
+        .to_string();
+
+    let initial: Value = client
+        .get(format!("http://{addr}/v1/threads/{thread_id}/context"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(initial["thread_id"], thread_id);
+    assert_eq!(initial["provider"], ApiProvider::Deepseek.as_str());
+    assert_eq!(initial["model"], DEFAULT_TEXT_MODEL);
+    assert_eq!(initial["context_window_tokens"], 1_000_000);
+    assert!(initial["estimated_input_tokens"].as_u64().is_some());
+    let estimated = initial["estimated_input_tokens"]
+        .as_u64()
+        .context("missing estimated input tokens")?;
+    assert_eq!(
+        initial["remaining_context_tokens"],
+        1_000_000_u64.saturating_sub(estimated)
+    );
+    assert_eq!(initial["source"], "active_engine");
+
+    let missing = client
+        .get(format!("http://{addr}/v1/threads/thr_missing/context"))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    let harness = crate::core::engine::mock_engine_handle();
+    runtime_threads
+        .install_test_engine(&thread_id, harness.handle.clone())
+        .await?;
+    let mut rx_op = harness.rx_op;
+    let tx_event = harness.tx_event;
+    tokio::spawn(async move {
+        while let Some(op) = rx_op.recv().await {
+            if !matches!(op, Op::SendMessage { .. }) {
+                continue;
+            }
+            let _ = tx_event
+                .send(EngineEvent::SessionUpdated {
+                    session_id: "context-test-session".to_string(),
+                    messages: vec![Message {
+                        role: "user".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: "measure this live context".to_string(),
+                            cache_control: None,
+                        }],
+                    }],
+                    system_prompt: None,
+                    model: DEFAULT_TEXT_MODEL.to_string(),
+                    workspace: PathBuf::from("."),
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::TurnStarted {
+                    turn_id: "context-test-turn".to_string(),
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::MessageStarted { index: 0 })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::MessageDelta {
+                    index: 0,
+                    content: "done".to_string(),
+                })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::MessageComplete { index: 0 })
+                .await;
+            let _ = tx_event
+                .send(EngineEvent::TurnComplete {
+                    usage: Usage::default(),
+                    status: TurnOutcomeStatus::Completed,
+                    error: None,
+                    tool_catalog: None,
+                    base_url: None,
+                })
+                .await;
+        }
+    });
+
+    let started: Value = client
+        .post(format!("http://{addr}/v1/threads/{thread_id}/turns"))
+        .json(&json!({ "prompt": "refresh context telemetry" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let turn_id = started["turn"]["id"]
+        .as_str()
+        .context("missing turn id")?
+        .to_string();
+    let _ =
+        wait_for_terminal_turn_status(&client, addr, &thread_id, &turn_id, Duration::from_secs(2))
+            .await?;
+
+    let events = runtime_threads.events_since(&thread_id, None)?;
+    let context_event = events
+        .iter()
+        .find(|event| event.event == "context.updated")
+        .context("missing durable context.updated event")?;
+    assert!(context_event.item_id.is_none());
+    assert_eq!(context_event.payload["thread_id"], thread_id);
+    assert_eq!(context_event.payload["context_window_tokens"], 1_000_000);
+    assert_eq!(context_event.payload["source"], "active_engine");
+
+    let events_resp = client
+        .get(format!(
+            "http://{addr}/v1/threads/{thread_id}/events?since_seq={}",
+            context_event.seq.saturating_sub(1)
+        ))
+        .send()
+        .await?
+        .error_for_status()?;
+    let frame = read_first_sse_frame(events_resp).await?;
+    let (event_name, envelope) = parse_sse_frame(&frame)?;
+    assert_eq!(event_name, "context.updated");
+    assert_eq!(envelope["event"], "context.updated");
+    assert_eq!(envelope["payload"]["thread_id"], thread_id);
+    assert_eq!(envelope["payload"]["context_window_tokens"], 1_000_000);
+    assert!(envelope["item_id"].is_null());
+
     handle.abort();
     Ok(())
 }
@@ -1972,7 +2294,7 @@ async fn steer_and_interrupt_endpoints_work_on_active_turn() -> Result<()> {
             let _ = tx_event
                 .send(EngineEvent::MessageDelta {
                     index: 0,
-                    content: format!("steer:{steer_text}"),
+                    content: format!("steer:{}", steer_text.content),
                 })
                 .await;
         }
@@ -2526,6 +2848,81 @@ async fn session_create_from_completed_thread_saves_messages() -> Result<()> {
         .await?;
     assert_eq!(manual_title["title"], "Manual saved title");
     assert_ne!(manual_title["session_id"], saved_session_handle);
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_save_current_preserves_yolo_thread_profile() -> Result<()> {
+    let root = std::env::temp_dir().join(format!("codewhale-yolo-session-{}", Uuid::new_v4()));
+    let sessions_dir = root.join("sessions");
+    let Some((addr, runtime_threads, handle)) =
+        spawn_test_server_with_root(root.clone(), sessions_dir).await?
+    else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+
+    let created: Value = client
+        .post(format!("http://{addr}/v1/threads"))
+        .json(&json!({
+            "model": "deepseek-v4-pro",
+            "mode": "yolo",
+            "workspace": root.join("workspace"),
+            "trust_mode": true,
+            "auto_approve": true
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let thread_id = created["id"]
+        .as_str()
+        .context("missing thread id")?
+        .to_string();
+
+    runtime_threads
+        .seed_thread_from_messages(
+            &thread_id,
+            &[
+                Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Persist the selected session mode".to_string(),
+                        cache_control: None,
+                    }],
+                },
+                Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "The session should remain in yolo mode.".to_string(),
+                        cache_control: None,
+                    }],
+                },
+            ],
+        )
+        .await?;
+
+    let saved: Value = client
+        .put(format!("http://{addr}/v1/sessions"))
+        .json(&json!({ "thread_id": thread_id }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(saved["session"]["metadata"]["mode"], "yolo");
+
+    let listed: Value = client
+        .get(format!("http://{addr}/v1/sessions"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(listed["sessions"][0]["mode"], "yolo");
 
     handle.abort();
     Ok(())
@@ -3260,6 +3657,8 @@ async fn runtime_info_reports_bind_state() -> Result<()> {
     assert_eq!(info["capabilities"]["external_tools"], true);
     assert_eq!(info["capabilities"]["worker_runtime"], true);
     assert!(info["experimental"].is_object());
+    assert_eq!(info["experimental"]["agent_run_cancel"], true);
+    assert_eq!(info["experimental"]["agent_run_nudge"], true);
 
     handle.abort();
     Ok(())

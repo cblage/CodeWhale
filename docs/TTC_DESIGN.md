@@ -47,7 +47,7 @@ Then three *distinct* entry points share that engine but **keep their own invoca
 
 The bug in `auto_reasoning.rs` was never "Low is wrong" — it's that **Low is a *ceiling*** for sub-agents. Fix: **Low stays the default *floor*; remove the ceiling.**
 
-**Tier resolution order:** `Profile (#4137) → explicit task override → session default → Low`.
+**Tier resolution order:** `explicit task override → Profile (#4137) → session default → Low`.
 - `SubAgentRuntime.reasoning_effort` continues to be forwarded verbatim.
 - `Auto` inside a sub-agent resolves through a **Fleet-role-aware resolver** (a `review`-role profile pins High, a `search`-role pins Low, a `planner` pins Max) — NOT the global keyword resolver.
 - The `agent` tool's `reasoning_effort` becomes "inherit from the Fleet profile unless explicitly overridden at spawn."

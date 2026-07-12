@@ -570,10 +570,71 @@ pub struct EngineHandle {
     tx_approval: mpsc::Sender<ApprovalDecision>,
     /// Send user input responses to the engine
     tx_user_input: mpsc::Sender<UserInputDecision>,
-    /// Send steer input for an in-flight turn.
-    tx_steer: mpsc::Sender<String>,
+    /// Send steer/runtime input for an in-flight turn.
+    tx_steer: mpsc::Sender<InFlightTurnInput>,
     /// Shared pause flag set by the TUI and read by the turn loop.
     shared_paused: Arc<StdMutex<bool>>,
+}
+
+/// Additional input injected into an in-flight model turn.
+///
+/// Ordinary UI/API steering remains authoritative external-user input. Runtime
+/// watchdog nudges use the same out-of-band channel so they can reach a busy
+/// turn, but carry non-authoritative provenance and an acknowledgement used to
+/// coalesce duplicate pending nudges.
+pub(crate) struct InFlightTurnInput {
+    pub(crate) content: String,
+    pub(crate) provenance: UserInputProvenance,
+    applied_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+/// Runtime-host handshake for an idle root sub-agent completion.
+///
+/// The standalone TUI/CLI can resume the engine directly because they consume
+/// the engine event stream continuously. Runtime API hosts instead need to
+/// persist a turn and attach its monitor *before* the engine emits any events;
+/// otherwise the autonomous follow-up is buffered and attributed to the next
+/// user turn. Runtime hosts own dispatch after receiving this request, so the
+/// engine event loop never blocks while another turn is finishing.
+pub(crate) struct IdleSubAgentHandoffRequest {
+    pub(crate) agent_ids: Vec<String>,
+    pub(crate) content: String,
+}
+
+impl InFlightTurnInput {
+    fn external_user(content: String) -> Self {
+        Self {
+            content,
+            provenance: UserInputProvenance::ExternalUser,
+            applied_tx: None,
+        }
+    }
+
+    fn runtime(content: String, applied_tx: tokio::sync::oneshot::Sender<()>) -> Self {
+        Self {
+            content,
+            provenance: UserInputProvenance::Runtime,
+            applied_tx: Some(applied_tx),
+        }
+    }
+
+    pub(super) fn acknowledge_applied(&mut self) {
+        if let Some(tx) = self.applied_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    pub(super) fn is_external_user(&self) -> bool {
+        self.provenance == UserInputProvenance::ExternalUser
+    }
+}
+
+impl std::ops::Deref for InFlightTurnInput {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.content
+    }
 }
 
 // `impl EngineHandle { ... }` moved to `engine/handle.rs` so the
@@ -600,7 +661,7 @@ pub struct Engine {
     tx_op: mpsc::Sender<Op>,
     rx_approval: mpsc::Receiver<ApprovalDecision>,
     rx_user_input: mpsc::Receiver<UserInputDecision>,
-    rx_steer: mpsc::Receiver<String>,
+    rx_steer: mpsc::Receiver<InFlightTurnInput>,
     tx_event: mpsc::Sender<Event>,
     /// Wakeup channel for the parent turn loop when a direct child sub-agent
     /// terminates (issue #756). Cloned into `SubAgentRuntime` so the runtime
@@ -615,6 +676,9 @@ pub struct Engine {
     /// dropped event can be synthesized once without duplicating a later
     /// delivery.
     delivered_subagent_completion_ids: HashSet<String>,
+    /// Optional Runtime API rendezvous for autonomous completion follow-ups.
+    /// `None` preserves the standalone TUI/CLI behavior.
+    tx_idle_subagent_handoff: Option<mpsc::UnboundedSender<IdleSubAgentHandoffRequest>>,
     cancel_token: CancellationToken,
     shared_cancel_token: Arc<StdMutex<CancellationToken>>,
     /// Latched reason for the current cancellation, mirrored to
@@ -902,6 +966,14 @@ impl Engine {
 
     /// Create a new engine with the given configuration
     pub fn new(config: EngineConfig, api_config: &Config) -> (Self, EngineHandle) {
+        Self::new_with_idle_subagent_handoff(config, api_config, None)
+    }
+
+    fn new_with_idle_subagent_handoff(
+        config: EngineConfig,
+        api_config: &Config,
+        tx_idle_subagent_handoff: Option<mpsc::UnboundedSender<IdleSubAgentHandoffRequest>>,
+    ) -> (Self, EngineHandle) {
         crate::tls::ensure_rustls_crypto_provider();
 
         if let Some(objective) = normalized_goal_objective(config.goal_objective.as_deref()) {
@@ -1087,6 +1159,7 @@ impl Engine {
             tx_subagent_completion,
             rx_subagent_completion,
             delivered_subagent_completion_ids: HashSet::new(),
+            tx_idle_subagent_handoff,
             cancel_token: cancel_token.clone(),
             shared_cancel_token: shared_cancel_token.clone(),
             cancel_reason: cancel_reason.clone(),
@@ -2162,6 +2235,7 @@ impl Engine {
         }
     }
 
+    #[cfg(test)]
     fn user_text_message_with_turn_metadata(&self, text: String) -> Message {
         self.user_text_message_with_turn_metadata_for_route(
             text,
@@ -2172,6 +2246,7 @@ impl Engine {
         )
     }
 
+    #[cfg(test)]
     fn user_text_message_with_turn_metadata_for_route(
         &self,
         text: String,
@@ -2249,11 +2324,31 @@ impl Engine {
         }
 
         let count = completions.len();
+        let agent_ids = completions
+            .iter()
+            .map(|completion| completion.agent_id.clone())
+            .collect::<Vec<_>>();
         let content = completions
             .iter()
             .map(|completion| turn_loop::subagent_completion_runtime_text(&completion.payload))
             .collect::<Vec<_>>()
             .join("\n\n");
+
+        if let Some(tx) = self.tx_idle_subagent_handoff.as_ref() {
+            let request = IdleSubAgentHandoffRequest {
+                agent_ids: agent_ids.clone(),
+                content: content.clone(),
+            };
+            if tx.send(request).is_ok() {
+                self.delivered_subagent_completion_ids.extend(agent_ids);
+                return;
+            }
+            tracing::error!(
+                "Runtime API idle sub-agent handoff listener closed before accepting completion"
+            );
+        }
+
+        self.delivered_subagent_completion_ids.extend(agent_ids);
 
         let _ = self
             .tx_event
@@ -3924,12 +4019,36 @@ pub fn spawn_engine(config: EngineConfig, api_config: &Config) -> EngineHandle {
     handle
 }
 
+/// Spawn an engine whose idle root-sub-agent completions are durably mediated
+/// by a Runtime API host.
+pub(crate) fn spawn_engine_with_idle_subagent_handoff(
+    config: EngineConfig,
+    api_config: &Config,
+) -> (
+    EngineHandle,
+    mpsc::UnboundedReceiver<IdleSubAgentHandoffRequest>,
+) {
+    let (tx_idle_subagent_handoff, rx_idle_subagent_handoff) = mpsc::unbounded_channel();
+    let (engine, handle) =
+        Engine::new_with_idle_subagent_handoff(config, api_config, Some(tx_idle_subagent_handoff));
+
+    spawn_supervised(
+        "runtime-engine-event-loop",
+        std::panic::Location::caller(),
+        async move {
+            engine.run().await;
+        },
+    );
+
+    (handle, rx_idle_subagent_handoff)
+}
+
 #[cfg(test)]
 pub(crate) struct MockEngineHandle {
     pub handle: EngineHandle,
     pub rx_op: mpsc::Receiver<Op>,
     rx_approval: mpsc::Receiver<ApprovalDecision>,
-    pub rx_steer: mpsc::Receiver<String>,
+    pub rx_steer: mpsc::Receiver<InFlightTurnInput>,
     pub tx_event: mpsc::Sender<Event>,
     pub cancel_token: CancellationToken,
 }

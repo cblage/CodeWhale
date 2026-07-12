@@ -808,7 +808,7 @@ exponential_base = 2.0
 # ─────────────────────────────────────────────────────────────────────────────────
 # Auto-compaction is a saved UI setting edited with `/config` (`auto_compact`).
 # The optional saved threshold setting is `auto_compact_threshold_percent`
-# (default 80). There is no config-file
+# (default 90). There is no config-file
 # `[compaction]` table yet; runtime compaction budgets are chosen by the TUI
 # from the active model/context window.
 

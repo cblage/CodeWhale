@@ -13,20 +13,12 @@ use crate::tools::spec::ToolResult;
 use codewhale_config::route::RouteLimits;
 use serde_json::Value;
 
-/// Max output tokens requested for normal agent turns. Generous on purpose:
-/// V4 thinking models can produce tens of thousands of reasoning tokens on
-/// hard prompts before the visible reply, and DeepSeek V4 ships with a 1M
-/// context window. v0.7.5 keeps this cap fixed instead of silently lowering
-/// `max_tokens` near pressure; hard-cycle/preflight checks reserve this budget
-/// plus safety headroom before sending the next request.
-pub(super) const TURN_MAX_OUTPUT_TOKENS: u32 = 262_144;
-
 /// Safe max output tokens sent in the API request. This must be low enough to
 /// work with providers that have smaller context limits than the model's native
 /// window (e.g., self-hosted vLLM/SGLang with `--max-model-len 131072`).
 /// DeepSeek's API will still produce as many tokens as needed for thinking;
 /// this cap just prevents HTTP 400 from providers with tight limits.
-const API_MAX_OUTPUT_TOKENS: u32 = 65_536;
+pub(super) const API_MAX_OUTPUT_TOKENS: u32 = 65_536;
 
 /// Compute the effective `max_tokens` to send in the API request for a given
 /// model. Uses `API_MAX_OUTPUT_TOKENS` (64K) which fits within common provider
@@ -78,6 +70,33 @@ pub(super) fn effective_max_output_tokens_for_route(
     u32::try_from(ContextBudget::new(u64::from(window), 0, u64::from(cap)).output_cap_tokens)
         .unwrap_or(cap)
         .max(1)
+}
+
+/// Output cap for the next request after accounting for the request's current
+/// input occupancy. The normal route cap remains 64K, but near the raw context
+/// boundary it shrinks to the exact remaining generation room instead of
+/// forcing an avoidable context-length failure.
+pub(super) fn max_output_tokens_for_route_at_input(
+    provider: ApiProvider,
+    model: &str,
+    route_limits: Option<RouteLimits>,
+    input_tokens: usize,
+) -> Option<u32> {
+    let window = u64::from(crate::route_budget::route_context_window_tokens(
+        provider,
+        model,
+        route_limits,
+    ));
+    let input = u64::try_from(input_tokens).ok()?;
+    let remaining = window
+        .saturating_sub(input)
+        .saturating_sub(crate::context_budget::CONTEXT_HEADROOM_TOKENS);
+    let capped = remaining.min(u64::from(effective_max_output_tokens_for_route(
+        provider,
+        model,
+        route_limits,
+    )));
+    u32::try_from(capped).ok().filter(|tokens| *tokens > 0)
 }
 /// Keep this many most recent messages when emergency trimming is required.
 pub(super) const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
@@ -580,13 +599,6 @@ pub(super) fn estimate_input_tokens_conservative(
         .saturating_add(framing_overhead)
 }
 
-/// Context windows at or above this size reserve the full
-/// [`TURN_MAX_OUTPUT_TOKENS`] (262K) when computing the internal input budget,
-/// leaving room for V4-class interleaved thinking. Below it, the reservation
-/// falls back to [`effective_max_output_tokens`] so a smaller self-hosted
-/// window does not underflow to a negative budget.
-const INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD: u32 = 500_000;
-
 /// Internal input-side token budget for a provider/model route:
 /// `window - reserved_output - headroom`. Used by the preflight check,
 /// emergency recovery, and capacity trimming to decide when to compact.
@@ -594,15 +606,9 @@ const INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD: u32 = 500_000;
 /// of disabling preflight; custom long-context deployments can still advertise
 /// their window with a `-256k`/`-1024k` model suffix.
 ///
-/// The reserved-output term is window-dependent:
-///   * `window >= 500K` (V4-class large-context) -> [`TURN_MAX_OUTPUT_TOKENS`]
-///     (262K). Preserves the "leave room for interleaved thinking" contract.
-///   * `window < 500K` (smaller / self-hosted, e.g. a 256K vLLM Qwen window)
-///     -> [`effective_max_output_tokens`], i.e. what the API actually caps
-///     output at. Reserving the full 262K here would compute
-///     `256K - 262K - 1K`, which underflows `checked_sub` to `None` and
-///     *silently disables every preflight and emergency recovery path* — the
-///     session then runs until the provider hard-rejects on context length.
+/// The reserved-output term is the same effective cap placed on a normal API
+/// request. Keeping preflight and request construction on one shared value
+/// avoids compacting a 1M context at ~74% while only permitting 64K of output.
 #[cfg(test)]
 pub(super) fn context_input_budget_for_provider(
     provider: ApiProvider,
@@ -656,17 +662,10 @@ pub(super) fn route_context_budget_for_route(
 fn route_output_reservation_for_window(
     provider: ApiProvider,
     model: &str,
-    window_tokens: u32,
+    _window_tokens: u32,
     route_limits: Option<RouteLimits>,
 ) -> u32 {
-    if let Some(route_cap) = crate::route_budget::route_output_limit_tokens(route_limits) {
-        return route_cap.min(TURN_MAX_OUTPUT_TOKENS);
-    }
-    if window_tokens >= INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD {
-        TURN_MAX_OUTPUT_TOKENS
-    } else {
-        effective_max_output_tokens_for_route(provider, model, route_limits)
-    }
+    effective_max_output_tokens_for_route(provider, model, route_limits)
 }
 
 pub(super) fn is_context_length_error_message(message: &str) -> bool {

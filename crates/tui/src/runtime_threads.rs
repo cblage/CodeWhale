@@ -26,11 +26,13 @@ use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::compaction::CompactionConfig;
+use crate::compaction::{CompactionConfig, estimate_input_tokens_conservative};
 use crate::config::{ApiProvider, Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS};
-use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
+use crate::core::engine::{
+    EngineConfig, EngineHandle, IdleSubAgentHandoffRequest, spawn_engine_with_idle_subagent_handoff,
+};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
-use crate::core::ops::Op;
+use crate::core::ops::{Op, UserInputProvenance};
 use crate::models::{ContentBlock, Message, SystemPrompt, Usage};
 use crate::route_budget::{
     auto_compact_default_for_route, compaction_threshold_for_route_at_percent, known_route_limits,
@@ -113,6 +115,36 @@ fn validated_record_id<'a>(id: &'a str, label: &str) -> Result<&'a str> {
         bail!("{label} contains unsupported characters");
     }
     Ok(trimmed)
+}
+
+fn normalize_agent_nudge_ids(mut agent_ids: Vec<String>) -> Result<Vec<String>> {
+    for agent_id in &agent_ids {
+        validated_record_id(agent_id, "agent id")?;
+    }
+    agent_ids.sort_unstable();
+    agent_ids.dedup();
+    if agent_ids.is_empty() {
+        bail!("agent_ids must contain at least one agent id");
+    }
+    if agent_ids.len() > MAX_SUBAGENTS {
+        bail!("agent_ids cannot contain more than {MAX_SUBAGENTS} unique ids");
+    }
+    Ok(agent_ids)
+}
+
+fn subagent_watchdog_prompt(agent_ids: &[String]) -> String {
+    let encoded_ids = serde_json::to_string(agent_ids).unwrap_or_else(|_| "[]".to_string());
+    format!(
+        "<codewhale:runtime_event kind=\"subagent_watchdog\" visibility=\"internal\">\n\
+This is a periodic runtime watchdog event, not user input. Check the current state of the listed \
+sub-agents now. Use one agent status inspection for this check. When a receipt says the worker is \
+waiting_for_user, interrupted_continuable, or otherwise needs parent action, inspect its \
+transcript_handle with handle_read and continue, replace, or close that lane as appropriate. Do not \
+duplicate work for agents that are still progressing, do not quote this watchdog event to the user, \
+and do not produce user-facing chatter solely because the watchdog fired.\n\
+Agent IDs: {encoded_ids}\n\
+</codewhale:runtime_event>"
+    )
 }
 
 fn sort_turn_items_by_start(items: &mut [TurnItemRecord]) {
@@ -756,6 +788,11 @@ pub struct StartTurnRequest {
     #[serde(default)]
     pub input_summary: Option<String>,
     pub model: Option<String>,
+    /// Per-turn reasoning selection supplied by API clients. This must reach
+    /// the engine because DeepSeek thinking mode cannot be combined with a
+    /// forced `tool_choice` (including strict-tool mode's `required`).
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     pub mode: Option<String>,
     pub allow_shell: Option<bool>,
     pub trust_mode: Option<bool>,
@@ -771,6 +808,15 @@ pub struct SteerTurnRequest {
     pub prompt: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentRunNudgeResult {
+    pub accepted: bool,
+    pub coalesced: bool,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub agent_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompactThreadRequest {
     #[serde(default)]
@@ -783,6 +829,24 @@ pub struct ThreadDetail {
     pub turns: Vec<TurnRecord>,
     pub items: Vec<TurnItemRecord>,
     pub latest_seq: u64,
+}
+
+/// Live context-window occupancy for one runtime thread. This deliberately
+/// reports the active request estimate rather than cumulative turn usage,
+/// which double-counts the stable prefix across tool-call rounds.
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadContextSnapshot {
+    pub thread_id: String,
+    pub provider: String,
+    pub model: String,
+    pub estimated_input_tokens: u64,
+    pub context_window_tokens: u64,
+    pub remaining_context_tokens: u64,
+    pub used_percent: f64,
+    pub auto_compact_enabled: bool,
+    pub auto_compact_threshold_tokens: u64,
+    pub auto_compact_threshold_percent: f64,
+    pub source: String,
 }
 
 /// Aggregation key for `aggregate_usage`. Whalescale#261 / #564.
@@ -879,6 +943,7 @@ struct ActiveTurnState {
     interrupt_requested: bool,
     auto_approve: bool,
     trust_mode: bool,
+    pending_agent_nudge: Option<String>,
 }
 
 #[derive(Clone)]
@@ -887,6 +952,15 @@ struct ActiveThreadState {
     active_turn: Option<ActiveTurnState>,
     route_provider: ApiProvider,
     route_model: String,
+    context_usage: Option<ThreadContextSnapshot>,
+}
+
+struct PreparedInternalTurn {
+    turn_id: String,
+    engine: EngineHandle,
+    thread: ThreadRecord,
+    provider: ApiProvider,
+    model: String,
 }
 
 #[derive(Default)]
@@ -1113,6 +1187,7 @@ impl RuntimeThreadManager {
 
             if let Some(state) = self.active.lock().await.engines.get_mut(&thread_id) {
                 state.route_model = route.model;
+                state.context_usage = None;
             }
 
             tracing::info!(thread_id = %thread_id, "Synced engine with reloaded config");
@@ -1692,6 +1767,102 @@ impl RuntimeThreadManager {
         })
     }
 
+    fn context_snapshot_for_messages(
+        &self,
+        thread_id: &str,
+        provider: ApiProvider,
+        model: &str,
+        messages: &[Message],
+        system_prompt: Option<&SystemPrompt>,
+        source: &str,
+    ) -> Result<ThreadContextSnapshot> {
+        let config = self.read_config().clone();
+        let route = resolve_runtime_thread_route(&config, provider, Some(model))?;
+        let settings = crate::settings::Settings::load().unwrap_or_default();
+        let compaction = runtime_compaction_config(
+            provider,
+            &route.model,
+            route.limits,
+            settings.auto_compact,
+            crate::settings::Settings::auto_compact_explicitly_configured(),
+            settings.auto_compact_threshold_percent,
+        );
+        let context_window_tokens = u64::from(route_context_window_tokens(
+            provider,
+            &route.model,
+            route.limits,
+        ));
+        let estimated_input_tokens =
+            u64::try_from(estimate_input_tokens_conservative(messages, system_prompt))
+                .unwrap_or(u64::MAX);
+        let used_percent = if context_window_tokens == 0 {
+            0.0
+        } else {
+            ((estimated_input_tokens as f64 / context_window_tokens as f64) * 100.0)
+                .clamp(0.0, 100.0)
+        };
+        let threshold_tokens = u64::try_from(compaction.token_threshold).unwrap_or(u64::MAX);
+        let threshold_percent = if context_window_tokens == 0 {
+            0.0
+        } else {
+            ((threshold_tokens as f64 / context_window_tokens as f64) * 100.0).clamp(0.0, 100.0)
+        };
+
+        Ok(ThreadContextSnapshot {
+            thread_id: thread_id.to_string(),
+            provider: provider.as_str().to_string(),
+            model: route.model,
+            estimated_input_tokens,
+            context_window_tokens,
+            remaining_context_tokens: context_window_tokens.saturating_sub(estimated_input_tokens),
+            used_percent,
+            auto_compact_enabled: compaction.enabled,
+            auto_compact_threshold_tokens: threshold_tokens,
+            auto_compact_threshold_percent: threshold_percent,
+            source: source.to_string(),
+        })
+    }
+
+    /// Return the current thread's authoritative engine context estimate.
+    /// The cached value is refreshed by `SessionUpdated` events, so callers do
+    /// not block behind an active tool-using turn merely to paint telemetry.
+    pub async fn context_snapshot(&self, id: &str) -> Result<ThreadContextSnapshot> {
+        let thread = self.get_thread(id).await?;
+        {
+            let active = self.active.lock().await;
+            if let Some(snapshot) = active
+                .engines
+                .get(id)
+                .and_then(|state| state.context_usage.clone())
+            {
+                return Ok(snapshot);
+            }
+        }
+
+        let engine = self.ensure_engine_loaded(&thread).await?;
+        let (provider, model) = {
+            let active = self.active.lock().await;
+            let state = active
+                .engines
+                .get(id)
+                .ok_or_else(|| anyhow!("Thread engine not loaded"))?;
+            (state.route_provider, state.route_model.clone())
+        };
+        let session = engine.get_session_snapshot().await?;
+        let snapshot = self.context_snapshot_for_messages(
+            id,
+            provider,
+            &model,
+            &session.messages,
+            session.system_prompt.as_ref(),
+            "active_engine",
+        )?;
+        if let Some(state) = self.active.lock().await.engines.get_mut(id) {
+            state.context_usage = Some(snapshot.clone());
+        }
+        Ok(snapshot)
+    }
+
     pub async fn resume_thread(&self, id: &str) -> Result<ThreadRecord> {
         let thread = self.get_thread(id).await?;
         self.ensure_engine_loaded(&thread).await?;
@@ -2193,6 +2364,41 @@ impl RuntimeThreadManager {
         Ok(())
     }
 
+    fn spawn_turn_monitor(
+        &self,
+        thread_id: String,
+        turn_id: String,
+        engine: EngineHandle,
+        context: &'static str,
+    ) -> tokio::task::JoinHandle<()> {
+        let manager = Arc::new(self.clone());
+        let cancel_token = self.cancel_token.clone();
+        tokio::spawn(async move {
+            if cancel_token.is_cancelled() {
+                tracing::debug!("Skipping {context} turn monitor: shutdown requested");
+                return;
+            }
+            use futures_util::FutureExt;
+            let result =
+                std::panic::AssertUnwindSafe(manager.monitor_turn(thread_id, turn_id, engine))
+                    .catch_unwind()
+                    .await;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => tracing::error!("Failed to monitor {context} turn: {err}"),
+                Err(panic_err) => {
+                    if let Some(msg) = panic_err.downcast_ref::<&str>() {
+                        tracing::error!("{context} turn monitor panicked: {msg}");
+                    } else if let Some(msg) = panic_err.downcast_ref::<String>() {
+                        tracing::error!("{context} turn monitor panicked: {msg}");
+                    } else {
+                        tracing::error!("{context} turn monitor panicked with unknown error");
+                    }
+                }
+            }
+        })
+    }
+
     pub async fn start_turn(&self, thread_id: &str, req: StartTurnRequest) -> Result<TurnRecord> {
         let prompt = req.prompt.trim().to_string();
         if prompt.is_empty() {
@@ -2220,6 +2426,12 @@ impl RuntimeThreadManager {
             .and_then(parse_mode_opt)
             .unwrap_or_else(|| parse_mode(&thread.mode));
         let requested_model = req.model.as_deref().unwrap_or(&thread.model).to_string();
+        let requested_reasoning_effort = req
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty())
+            .map(str::to_string);
         let auto_model = requested_model.trim().eq_ignore_ascii_case("auto");
         let cfg_snapshot = self.config.read().clone();
         let (provider, selected_model, reasoning_effort, verbosity) = {
@@ -2236,20 +2448,33 @@ impl RuntimeThreadManager {
                 (
                     selection.provider,
                     selection.model,
-                    selection
-                        .reasoning_effort
-                        .map(|effort| effort.as_setting().to_string()),
+                    match requested_reasoning_effort.as_deref() {
+                        // For an auto-routed model, `auto` means use the
+                        // router's concrete recommendation for this prompt.
+                        Some(effort) if !effort.eq_ignore_ascii_case("auto") => {
+                            Some(effort.to_string())
+                        }
+                        _ => selection
+                            .reasoning_effort
+                            .map(|effort| effort.as_setting().to_string()),
+                    },
                     verbosity,
                 )
             } else {
                 (
                     cfg_snapshot.api_provider(),
                     requested_model,
-                    None,
+                    requested_reasoning_effort
+                        .clone()
+                        .or_else(|| cfg_snapshot.reasoning_effort().map(str::to_string)),
                     verbosity,
                 )
             }
         };
+        let reasoning_effort_auto = auto_model
+            || reasoning_effort
+                .as_deref()
+                .is_some_and(|effort| effort.eq_ignore_ascii_case("auto"));
         let route = resolve_runtime_thread_route(&cfg_snapshot, provider, Some(&selected_model))?;
         let model = route.model;
         let route_limits = route.limits;
@@ -2344,9 +2569,11 @@ impl RuntimeThreadManager {
                 interrupt_requested: false,
                 auto_approve: req.auto_approve.unwrap_or(thread.auto_approve),
                 trust_mode: req.trust_mode.unwrap_or(thread.trust_mode),
+                pending_agent_nudge: None,
             });
             state.route_provider = provider;
             state.route_model.clone_from(&model);
+            state.context_usage = None;
             touch_lru(&mut active.lru, thread_id);
         }
         let allow_shell = req.allow_shell.unwrap_or(thread.allow_shell);
@@ -2365,7 +2592,7 @@ impl RuntimeThreadManager {
                 goal_token_budget: None,
                 goal_status: crate::tools::goal::GoalStatus::Active,
                 reasoning_effort,
-                reasoning_effort_auto: auto_model,
+                reasoning_effort_auto,
                 auto_model,
                 allow_shell,
                 trust_mode,
@@ -2386,43 +2613,551 @@ impl RuntimeThreadManager {
             .await
             .map_err(|e| anyhow!("Failed to start turn: {e}"))?;
 
+        let _monitor = self.spawn_turn_monitor(
+            thread_id.to_string(),
+            turn_id.clone(),
+            engine.clone(),
+            "user",
+        );
+
+        Ok(turn)
+    }
+
+    async fn prepare_internal_turn(
+        &self,
+        thread_id: &str,
+        source: &'static str,
+        summary: String,
+        agent_ids: &[String],
+        provenance: UserInputProvenance,
+        pending_agent_nudge: Option<String>,
+        wait_for_idle: bool,
+    ) -> Result<PreparedInternalTurn> {
+        let mut thread = self.get_thread(thread_id).await?;
+        let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
+
+        let (engine, provider, model) = loop {
+            let reserved = {
+                let mut active = self.active.lock().await;
+                let active_thread = active
+                    .engines
+                    .get_mut(thread_id)
+                    .ok_or_else(|| anyhow!("Thread {thread_id} is not active"))?;
+                if active_thread.active_turn.is_none() {
+                    active_thread.active_turn = Some(ActiveTurnState {
+                        turn_id: turn_id.clone(),
+                        interrupt_requested: false,
+                        auto_approve: thread.auto_approve,
+                        trust_mode: thread.trust_mode,
+                        pending_agent_nudge: pending_agent_nudge.clone(),
+                    });
+                    Some((
+                        active_thread.engine.clone(),
+                        active_thread.route_provider,
+                        active_thread.route_model.clone(),
+                    ))
+                } else {
+                    None
+                }
+            };
+
+            if let Some(reserved) = reserved {
+                break reserved;
+            }
+            if !wait_for_idle {
+                bail!("Thread {thread_id} acquired an active turn before internal turn startup");
+            }
+            tokio::select! {
+                () = self.cancel_token.cancelled() => {
+                    bail!("Runtime shut down before internal turn startup");
+                }
+                () = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        };
+
+        let now = Utc::now();
+        let status_item = TurnItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: format!("item_{}", &Uuid::new_v4().to_string()[..8]),
+            turn_id: turn_id.clone(),
+            kind: TurnItemKind::Status,
+            status: TurnItemLifecycleStatus::Completed,
+            summary: summary.clone(),
+            detail: Some(summary.clone()),
+            metadata: Some(json!({
+                "source": source,
+                "internal": true,
+                "provenance": provenance.as_str(),
+                "agent_ids": agent_ids,
+            })),
+            artifact_refs: Vec::new(),
+            started_at: Some(now),
+            ended_at: Some(now),
+        };
+        let turn = TurnRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: turn_id.clone(),
+            thread_id: thread_id.to_string(),
+            status: RuntimeTurnStatus::InProgress,
+            input_summary: summary,
+            created_at: now,
+            started_at: Some(now),
+            ended_at: None,
+            duration_ms: None,
+            usage: None,
+            effective_provider: Some(provider.as_str().to_string()),
+            effective_model: Some(model.clone()),
+            error: None,
+            item_ids: vec![status_item.id.clone()],
+            steer_count: 0,
+        };
+
+        let preparation: Result<()> = async {
+            self.store.save_item(&status_item)?;
+            self.store.save_turn(&turn)?;
+            thread.latest_turn_id = Some(turn_id.clone());
+            thread.updated_at = now;
+            self.store.save_thread(&thread)?;
+
+            self.emit_event(
+                thread_id,
+                Some(&turn_id),
+                None,
+                "turn.started",
+                json!({
+                    "turn": turn,
+                    "source": source,
+                    "internal": true,
+                    "provenance": provenance.as_str(),
+                    "agent_ids": agent_ids,
+                }),
+            )
+            .await?;
+            self.emit_event(
+                thread_id,
+                Some(&turn_id),
+                Some(&status_item.id),
+                "item.started",
+                json!({ "item": status_item }),
+            )
+            .await?;
+            self.emit_event(
+                thread_id,
+                Some(&turn_id),
+                Some(&status_item.id),
+                "item.completed",
+                json!({ "item": status_item }),
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+
+        if let Err(err) = preparation {
+            let mut active = self.active.lock().await;
+            if let Some(state) = active.engines.get_mut(thread_id)
+                && state
+                    .active_turn
+                    .as_ref()
+                    .is_some_and(|turn| turn.turn_id == turn_id)
+            {
+                state.active_turn = None;
+            }
+            return Err(err);
+        }
+
+        Ok(PreparedInternalTurn {
+            turn_id,
+            engine,
+            thread,
+            provider,
+            model,
+        })
+    }
+
+    fn spawn_idle_subagent_handoff_listener(
+        &self,
+        thread_id: String,
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<IdleSubAgentHandoffRequest>,
+    ) {
         let manager = Arc::new(self.clone());
-        let thread_id_owned = thread_id.to_string();
-        let turn_id_owned = turn_id.clone();
-        let engine_clone = engine.clone();
         let cancel_token = self.cancel_token.clone();
         tokio::spawn(async move {
-            if cancel_token.is_cancelled() {
-                tracing::debug!("Skipping turn monitor: shutdown requested");
-                return;
-            }
-            use futures_util::FutureExt;
-            let result = std::panic::AssertUnwindSafe(manager.monitor_turn(
-                thread_id_owned,
-                turn_id_owned,
-                engine_clone,
-            ))
-            .catch_unwind()
-            .await;
-            match result {
-                Ok(res) => {
-                    if let Err(err) = res {
-                        tracing::error!("Failed to monitor turn: {err}");
+            loop {
+                let request = tokio::select! {
+                    () = cancel_token.cancelled() => break,
+                    request = rx.recv() => request,
+                };
+                let Some(request) = request else {
+                    break;
+                };
+                let IdleSubAgentHandoffRequest { agent_ids, content } = request;
+                let summary = format!(
+                    "Sub-agent completion handoff ({} agent{})",
+                    agent_ids.len(),
+                    if agent_ids.len() == 1 { "" } else { "s" }
+                );
+                let result = manager
+                    .prepare_internal_turn(
+                        &thread_id,
+                        "subagent_completion",
+                        summary,
+                        &agent_ids,
+                        UserInputProvenance::SubAgentHandoff,
+                        None,
+                        true,
+                    )
+                    .await;
+                let result = match result {
+                    Ok(prepared) => {
+                        manager
+                            .dispatch_prepared_internal_turn(
+                                prepared,
+                                content,
+                                UserInputProvenance::SubAgentHandoff,
+                                "subagent_completion",
+                            )
+                            .await
                     }
-                }
-                Err(panic_err) => {
-                    if let Some(msg) = panic_err.downcast_ref::<&str>() {
-                        tracing::error!("Turn monitor panicked: {}", msg);
-                    } else if let Some(msg) = panic_err.downcast_ref::<String>() {
-                        tracing::error!("Turn monitor panicked: {}", msg);
-                    } else {
-                        tracing::error!("Turn monitor panicked with unknown error");
-                    }
+                    Err(err) => Err(err),
+                };
+                if let Err(err) = result {
+                    tracing::error!(
+                        thread_id = %thread_id,
+                        "Failed to dispatch durable sub-agent completion turn: {err:#}"
+                    );
                 }
             }
         });
+    }
 
-        Ok(turn)
+    async fn fail_internal_turn(&self, thread_id: &str, turn_id: &str, error: &str) {
+        if let Ok(mut turn) = self.store.load_turn(turn_id) {
+            let ended_at = Utc::now();
+            turn.status = RuntimeTurnStatus::Failed;
+            turn.ended_at = Some(ended_at);
+            turn.duration_ms = turn.started_at.map(|start| duration_ms(start, ended_at));
+            turn.error = Some(error.to_string());
+            if self.store.save_turn(&turn).is_ok() {
+                let _ = self
+                    .emit_event(
+                        thread_id,
+                        Some(turn_id),
+                        None,
+                        "turn.completed",
+                        json!({ "turn": turn, "internal_dispatch_failed": true }),
+                    )
+                    .await;
+            }
+        }
+        let mut active = self.active.lock().await;
+        if let Some(state) = active.engines.get_mut(thread_id)
+            && state
+                .active_turn
+                .as_ref()
+                .is_some_and(|turn| turn.turn_id == turn_id)
+        {
+            state.active_turn = None;
+        }
+    }
+
+    async fn dispatch_prepared_internal_turn(
+        &self,
+        prepared: PreparedInternalTurn,
+        prompt: String,
+        provenance: UserInputProvenance,
+        context: &'static str,
+    ) -> Result<()> {
+        let cfg = self.config.read().clone();
+        let route =
+            match resolve_runtime_thread_route(&cfg, prepared.provider, Some(&prepared.model)) {
+                Ok(route) => route,
+                Err(err) => {
+                    self.fail_internal_turn(
+                        &prepared.thread.id,
+                        &prepared.turn_id,
+                        &format!("{err:#}"),
+                    )
+                    .await;
+                    return Err(err);
+                }
+            };
+        let settings = crate::settings::Settings::load().unwrap_or_default();
+        let compaction = runtime_compaction_config(
+            prepared.provider,
+            &prepared.model,
+            route.limits,
+            settings.auto_compact,
+            crate::settings::Settings::auto_compact_explicitly_configured(),
+            settings.auto_compact_threshold_percent,
+        );
+        let reasoning_effort = cfg.reasoning_effort().map(str::to_string);
+        let auto_model = prepared.thread.model.trim().eq_ignore_ascii_case("auto");
+        let reasoning_effort_auto = auto_model
+            || reasoning_effort
+                .as_deref()
+                .is_some_and(|effort| effort.eq_ignore_ascii_case("auto"));
+
+        if prepared.engine.tx_op.is_closed() {
+            let error = "Thread engine closed before internal turn dispatch";
+            self.fail_internal_turn(&prepared.thread.id, &prepared.turn_id, error)
+                .await;
+            bail!(error);
+        }
+
+        let monitor = self.spawn_turn_monitor(
+            prepared.thread.id.clone(),
+            prepared.turn_id.clone(),
+            prepared.engine.clone(),
+            context,
+        );
+
+        let send_result = prepared
+            .engine
+            .send(Op::SendMessage {
+                content: prompt,
+                mode: parse_mode(&prepared.thread.mode),
+                provider: Some(prepared.provider),
+                model: prepared.model,
+                route_limits: route.limits,
+                compaction: Box::new(compaction),
+                goal_objective: None,
+                goal_token_budget: None,
+                goal_status: crate::tools::goal::GoalStatus::Active,
+                reasoning_effort,
+                reasoning_effort_auto,
+                auto_model,
+                allow_shell: prepared.thread.allow_shell,
+                trust_mode: prepared.thread.trust_mode,
+                auto_approve: prepared.thread.auto_approve,
+                translation_enabled: false,
+                show_thinking: settings.show_thinking,
+                allowed_tools: None,
+                dynamic_tools: Vec::new(),
+                hook_executor: None,
+                approval_mode: if prepared.thread.auto_approve {
+                    crate::tui::approval::ApprovalMode::Bypass
+                } else {
+                    crate::tui::approval::ApprovalMode::Suggest
+                },
+                verbosity: cfg.verbosity.clone(),
+                provenance,
+            })
+            .await;
+        if let Err(err) = send_result {
+            monitor.abort();
+            let error = format!("Failed to start internal turn: {err}");
+            self.fail_internal_turn(&prepared.thread.id, &prepared.turn_id, &error)
+                .await;
+            bail!(error);
+        }
+        Ok(())
+    }
+
+    async fn dispatch_idle_watchdog_turn(
+        &self,
+        thread_id: &str,
+        agent_ids: &[String],
+        nudge_token: String,
+    ) -> Result<AgentRunNudgeResult> {
+        let prompt = subagent_watchdog_prompt(agent_ids);
+        let summary = format!(
+            "Sub-agent watchdog check ({} agent{})",
+            agent_ids.len(),
+            if agent_ids.len() == 1 { "" } else { "s" }
+        );
+        let prepared = self
+            .prepare_internal_turn(
+                thread_id,
+                "subagent_watchdog",
+                summary,
+                agent_ids,
+                UserInputProvenance::Runtime,
+                Some(nudge_token),
+                false,
+            )
+            .await?;
+
+        let turn_id = prepared.turn_id.clone();
+        self.dispatch_prepared_internal_turn(
+            prepared,
+            prompt,
+            UserInputProvenance::Runtime,
+            "subagent_watchdog",
+        )
+        .await?;
+
+        Ok(AgentRunNudgeResult {
+            accepted: true,
+            coalesced: false,
+            thread_id: thread_id.to_string(),
+            turn_id,
+            agent_ids: agent_ids.to_vec(),
+        })
+    }
+
+    /// Ask an already-loaded thread engine to cancel one of its sub-agents.
+    ///
+    /// This deliberately does not call `ensure_engine_loaded`: live sub-agent
+    /// task handles exist only in the engine that owns them, so loading a new
+    /// engine would create an unrelated manager that cannot cancel the task.
+    pub async fn cancel_sub_agent(&self, thread_id: &str, agent_id: &str) -> Result<()> {
+        let agent_id = agent_id.trim();
+        if agent_id.is_empty() {
+            bail!("agent_id is required");
+        }
+
+        let engine = {
+            let mut active = self.active.lock().await;
+            let engine = active
+                .engines
+                .get(thread_id)
+                .map(|state| state.engine.clone())
+                .ok_or_else(|| anyhow!("Thread {thread_id} is not active"))?;
+            touch_lru(&mut active.lru, thread_id);
+            engine
+        };
+
+        engine
+            .send(Op::CancelSubAgent {
+                agent_id: agent_id.to_string(),
+            })
+            .await
+            .with_context(|| format!("Failed to request cancellation of sub-agent {agent_id}"))
+    }
+
+    /// Queue a non-authoritative watchdog nudge into the parent thread.
+    ///
+    /// Busy parents receive the nudge out-of-band. Idle parents get a durable
+    /// internal Runtime turn first, so its monitor is attached before the
+    /// engine emits any adjudication output.
+    pub async fn nudge_sub_agents(
+        &self,
+        thread_id: &str,
+        agent_ids: Vec<String>,
+    ) -> Result<AgentRunNudgeResult> {
+        let agent_ids = normalize_agent_nudge_ids(agent_ids)?;
+        let nudge_token = format!("nudge_{}", &Uuid::new_v4().to_string()[..8]);
+
+        let active_target = {
+            let mut active = self.active.lock().await;
+            let active_thread = active
+                .engines
+                .get_mut(thread_id)
+                .ok_or_else(|| anyhow!("Thread {thread_id} is not active"))?;
+            let target = if let Some(active_turn) = active_thread.active_turn.as_mut() {
+                if active_turn.pending_agent_nudge.is_some() {
+                    return Ok(AgentRunNudgeResult {
+                        accepted: false,
+                        coalesced: true,
+                        thread_id: thread_id.to_string(),
+                        turn_id: active_turn.turn_id.clone(),
+                        agent_ids,
+                    });
+                }
+                active_turn.pending_agent_nudge = Some(nudge_token.clone());
+                Some((active_thread.engine.clone(), active_turn.turn_id.clone()))
+            } else {
+                None
+            };
+            touch_lru(&mut active.lru, thread_id);
+            target
+        };
+
+        let Some((engine, turn_id)) = active_target else {
+            return self
+                .dispatch_idle_watchdog_turn(thread_id, &agent_ids, nudge_token)
+                .await;
+        };
+
+        let applied_rx = match engine
+            .nudge_runtime(subagent_watchdog_prompt(&agent_ids))
+            .await
+        {
+            Ok(rx) => rx,
+            Err(err) => {
+                let mut active = self.active.lock().await;
+                if let Some(active_turn) = active
+                    .engines
+                    .get_mut(thread_id)
+                    .and_then(|state| state.active_turn.as_mut())
+                    && active_turn.pending_agent_nudge.as_deref() == Some(nudge_token.as_str())
+                {
+                    active_turn.pending_agent_nudge = None;
+                }
+                return Err(anyhow!("Failed to queue sub-agent watchdog nudge: {err}"));
+            }
+        };
+
+        let active = Arc::clone(&self.active);
+        let thread_id_for_ack = thread_id.to_string();
+        let token_for_ack = nudge_token.clone();
+        tokio::spawn(async move {
+            let _ = applied_rx.await;
+            let mut active = active.lock().await;
+            if let Some(active_turn) = active
+                .engines
+                .get_mut(&thread_id_for_ack)
+                .and_then(|state| state.active_turn.as_mut())
+                && active_turn.pending_agent_nudge.as_deref() == Some(token_for_ack.as_str())
+            {
+                active_turn.pending_agent_nudge = None;
+            }
+        });
+
+        let now = Utc::now();
+        let summary = format!(
+            "Sub-agent watchdog nudge queued for {} agent(s)",
+            agent_ids.len()
+        );
+        let item = TurnItemRecord {
+            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+            id: format!("item_{}", &Uuid::new_v4().to_string()[..8]),
+            turn_id: turn_id.clone(),
+            kind: TurnItemKind::Status,
+            status: TurnItemLifecycleStatus::Completed,
+            summary: summary.clone(),
+            detail: Some(summary),
+            metadata: Some(json!({
+                "source": "subagent_watchdog",
+                "internal": true,
+                "agent_ids": agent_ids.clone(),
+            })),
+            artifact_refs: Vec::new(),
+            started_at: Some(now),
+            ended_at: Some(now),
+        };
+        self.store.save_item(&item)?;
+        self.attach_item_to_turn(&turn_id, &item.id)?;
+        self.emit_event(
+            thread_id,
+            Some(&turn_id),
+            Some(&item.id),
+            "turn.nudged",
+            json!({
+                "thread_id": thread_id,
+                "turn_id": turn_id.clone(),
+                "agent_ids": agent_ids.clone(),
+                "source": "subagent_watchdog",
+            }),
+        )
+        .await?;
+        self.emit_event(
+            thread_id,
+            Some(&turn_id),
+            Some(&item.id),
+            "item.completed",
+            json!({ "item": item }),
+        )
+        .await?;
+
+        Ok(AgentRunNudgeResult {
+            accepted: true,
+            coalesced: false,
+            thread_id: thread_id.to_string(),
+            turn_id,
+            agent_ids,
+        })
     }
 
     pub async fn interrupt_turn(&self, thread_id: &str, turn_id: &str) -> Result<TurnRecord> {
@@ -2595,6 +3330,7 @@ impl RuntimeThreadManager {
                 interrupt_requested: false,
                 auto_approve: thread.auto_approve,
                 trust_mode: thread.trust_mode,
+                pending_agent_nudge: None,
             });
             touch_lru(&mut active.lru, thread_id);
         }
@@ -2794,7 +3530,8 @@ impl RuntimeThreadManager {
             exec_policy_engine: cfg.exec_policy_engine.clone(),
         };
 
-        let engine = spawn_engine(engine_cfg, &cfg);
+        let (engine, idle_subagent_handoff_rx) =
+            spawn_engine_with_idle_subagent_handoff(engine_cfg, &cfg);
 
         // When the thread has an associated session, load the full message history
         // (including thinking/tool blocks) from the session file. This preserves
@@ -2864,10 +3601,12 @@ impl RuntimeThreadManager {
                 active_turn: None,
                 route_provider: provider,
                 route_model,
+                context_usage: None,
             },
         );
         touch_lru(&mut active.lru, &thread.id);
         drop(active);
+        self.spawn_idle_subagent_handoff_listener(thread.id.clone(), idle_subagent_handoff_rx);
         for handle in evicted {
             let _ = handle.send(Op::Shutdown).await;
         }
@@ -3060,6 +3799,40 @@ impl RuntimeThreadManager {
                         None,
                         "turn.lifecycle",
                         json!({ "status": "in_progress" }),
+                    )
+                    .await?;
+                }
+                EngineEvent::SessionUpdated {
+                    messages,
+                    system_prompt,
+                    model,
+                    ..
+                } => {
+                    let provider = {
+                        let active = self.active.lock().await;
+                        active
+                            .engines
+                            .get(&thread_id)
+                            .map(|state| state.route_provider)
+                            .unwrap_or_else(|| self.read_config().api_provider())
+                    };
+                    let snapshot = self.context_snapshot_for_messages(
+                        &thread_id,
+                        provider,
+                        &model,
+                        &messages,
+                        system_prompt.as_ref(),
+                        "active_engine",
+                    )?;
+                    if let Some(state) = self.active.lock().await.engines.get_mut(&thread_id) {
+                        state.context_usage = Some(snapshot.clone());
+                    }
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        None,
+                        "context.updated",
+                        serde_json::to_value(snapshot)?,
                     )
                     .await?;
                 }
@@ -4006,6 +4779,7 @@ impl RuntimeThreadManager {
                 active_turn: None,
                 route_provider: route.provider,
                 route_model: route.model,
+                context_usage: None,
             },
         );
         touch_lru(&mut active.lru, thread_id);

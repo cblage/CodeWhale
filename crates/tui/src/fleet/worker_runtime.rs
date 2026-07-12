@@ -93,6 +93,7 @@ pub fn fleet_task_to_worker_spec_with_profiles(
         session_name: Some(format!("fleet-{}-{}", worker_id, task_spec.id)),
         objective,
         role,
+        profile: agent_profile.map(|profile| profile.id.clone()),
         agent_type,
         model: effective_model,
         workspace: workspace.to_path_buf(),
@@ -1223,6 +1224,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(spec.role.as_deref(), Some("reviewer"));
+        assert_eq!(spec.profile.as_deref(), Some("reviewer"));
         assert_eq!(spec.agent_type, SubAgentType::Review);
         assert!(
             spec.objective
@@ -2183,6 +2185,7 @@ mod tests {
             session_name: None,
             objective: "test".to_string(),
             role: None,
+            profile: None,
             agent_type: SubAgentType::General,
             model: "auto".to_string(),
             workspace: std::path::PathBuf::from("/tmp"),
@@ -2212,6 +2215,7 @@ mod tests {
             session_name: None,
             objective: "test".to_string(),
             role: None,
+            profile: None,
             agent_type: SubAgentType::General,
             model: "auto".to_string(),
             workspace: std::path::PathBuf::from("/tmp"),
@@ -2317,6 +2321,7 @@ mod tests {
             session_name: None,
             objective: "do the thing".to_string(),
             role: None,
+            profile: None,
             agent_type: SubAgentType::General,
             model: "auto".to_string(),
             workspace: std::path::PathBuf::from("/tmp"),

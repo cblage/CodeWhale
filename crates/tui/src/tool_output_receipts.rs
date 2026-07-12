@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::artifacts::{ArtifactKind, ArtifactRecord, format_artifact_relative_path};
+use crate::artifacts::{ArtifactKind, ArtifactRecord};
 use crate::fast_hash::FastHashMap;
 use crate::models::{ContentBlock, Message};
 use crate::tools::truncate;
@@ -229,7 +229,7 @@ fn render_tool_output_receipt(
         DetailHandle::Artifact(record) => (
             record.id.clone(),
             format!("retrieve_tool_result ref={}", record.id),
-            format_artifact_relative_path(&record.storage_path),
+            "CodeWhale runtime artifact (not a workspace file; do not use read_file)".to_string(),
         ),
         DetailHandle::Sha { sha, persisted } => {
             let handle = format!("sha:{sha}");
@@ -420,6 +420,11 @@ mod tests {
         assert!(content.contains("tool: exec_shell"));
         assert!(content.contains("detail_handle: art_call-big"));
         assert!(content.contains("retrieve: retrieve_tool_result ref=art_call-big"));
+        assert!(content.contains(
+            "storage: CodeWhale runtime artifact (not a workspace file; do not use read_file)"
+        ));
+        assert!(!content.contains("storage: artifacts/"));
+        assert!(!content.contains("path: artifacts/"));
         assert!(
             content.contains("command_or_query: {\"command\":\"cargo test -p codewhale-tui\"}")
         );

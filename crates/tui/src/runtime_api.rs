@@ -49,8 +49,8 @@ pub(super) use crate::models::{ContentBlock, Message};
 use crate::runtime_threads::{
     CompactThreadRequest, CreateThreadRequest, ExternalApprovalDecision, RuntimeThreadManager,
     RuntimeThreadManagerConfig, SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest,
-    ThreadDetail, ThreadListFilter, ThreadRecord, TurnItemKind, TurnRecord, UpdateThreadRequest,
-    UsageGroupBy,
+    ThreadContextSnapshot, ThreadDetail, ThreadListFilter, ThreadRecord, TurnItemKind, TurnRecord,
+    UpdateThreadRequest, UsageGroupBy,
 };
 #[cfg(test)]
 pub(super) use crate::runtime_threads::{RuntimeTurnStatus, TurnItemLifecycleStatus};
@@ -256,6 +256,18 @@ struct SkillsResponse {
 #[derive(Debug, Serialize)]
 struct AgentRunsResponse {
     runs: Vec<AgentWorkerRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct CancelAgentRunResponse {
+    accepted: bool,
+    thread_id: String,
+    agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct NudgeAgentRunsBody {
+    agent_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -553,11 +565,20 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/threads", get(list_threads).post(create_thread))
         .route("/v1/threads/summary", get(list_threads_summary))
         .route("/v1/threads/{id}", get(get_thread).patch(update_thread))
+        .route("/v1/threads/{id}/context", get(get_thread_context))
         .route("/v1/threads/{id}/resume", post(resume_thread))
         .route("/v1/threads/{id}/fork", post(fork_thread))
         .route("/v1/threads/{id}/undo", post(undo_thread_turn))
         .route("/v1/threads/{id}/patch-undo", post(patch_undo_thread_turn))
         .route("/v1/threads/{id}/retry", post(retry_thread_turn))
+        .route(
+            "/v1/threads/{thread_id}/agent-runs/{agent_id}/cancel",
+            post(cancel_thread_agent_run),
+        )
+        .route(
+            "/v1/threads/{thread_id}/agent-runs/nudge",
+            post(nudge_thread_agent_runs),
+        )
         .route("/v1/threads/{id}/turns", post(start_thread_turn))
         .route(
             "/v1/threads/{id}/turns/{turn_id}/steer",
@@ -902,6 +923,45 @@ async fn get_agent_run(
         })
         .ok_or_else(|| ApiError::not_found(format!("agent run '{run_id}' not found")))?;
     Ok(Json(run))
+}
+
+async fn cancel_thread_agent_run(
+    State(state): State<RuntimeApiState>,
+    Path((thread_id, agent_id)): Path<(String, String)>,
+) -> Result<(StatusCode, Json<CancelAgentRunResponse>), ApiError> {
+    state
+        .runtime_threads
+        .cancel_sub_agent(&thread_id, &agent_id)
+        .await
+        .map_err(map_thread_err)?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CancelAgentRunResponse {
+            accepted: true,
+            thread_id,
+            agent_id,
+        }),
+    ))
+}
+
+async fn nudge_thread_agent_runs(
+    State(state): State<RuntimeApiState>,
+    Path(thread_id): Path<String>,
+    Json(req): Json<NudgeAgentRunsBody>,
+) -> Result<
+    (
+        StatusCode,
+        Json<crate::runtime_threads::AgentRunNudgeResult>,
+    ),
+    ApiError,
+> {
+    let result = state
+        .runtime_threads
+        .nudge_sub_agents(&thread_id, req.agent_ids)
+        .await
+        .map_err(map_thread_err)?;
+    Ok((StatusCode::ACCEPTED, Json(result)))
 }
 
 async fn list_fleet_runs(State(state): State<RuntimeApiState>) -> Result<Json<Value>, ApiError> {
@@ -1416,7 +1476,11 @@ async fn runtime_info(State(state): State<RuntimeApiState>) -> Json<RuntimeInfoR
         auth_required: state.auth_required,
         transports: vec!["http", "sse"],
         capabilities: default_runtime_capabilities(),
-        experimental: RuntimeExperimentalCapabilities::default(),
+        experimental: RuntimeExperimentalCapabilities {
+            agent_run_cancel: true,
+            agent_run_nudge: true,
+            ..RuntimeExperimentalCapabilities::default()
+        },
         version,
     })
 }
@@ -1611,6 +1675,18 @@ async fn get_thread(
         .await
         .map_err(map_thread_err)?;
     Ok(Json(detail))
+}
+
+async fn get_thread_context(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<ThreadContextSnapshot>, ApiError> {
+    let snapshot = state
+        .runtime_threads
+        .context_snapshot(&id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok(Json(snapshot))
 }
 
 async fn update_thread(
@@ -1862,6 +1938,7 @@ async fn retry_thread_turn(
                 prompt: retry_prompt,
                 input_summary: None,
                 model: None,
+                reasoning_effort: None,
                 mode: None,
                 allow_shell: None,
                 trust_mode: None,

@@ -291,6 +291,7 @@ fronting layer.
 - `GET /v1/threads/summary?limit=50&search=<optional>&include_archived=false&archived_only=false`
 - `POST /v1/threads`
 - `GET /v1/threads/{id}`
+- `GET /v1/threads/{id}/context`
 - `PATCH /v1/threads/{id}` (see body shape below)
 - `POST /v1/threads/{id}/resume`
 - `POST /v1/threads/{id}/fork`
@@ -324,6 +325,34 @@ workspace metadata:
 `dirty` is true when the workspace has staged, unstaged, or untracked changes.
 `workspace` is included so editor clients can show when an agent lane is working
 outside the current VS Code folder.
+
+`GET /v1/threads/{id}/context` returns live context-window occupancy for the
+next provider request. It uses the engine's conservative active-input estimate,
+not cumulative usage (which can count the same stable prefix once per tool-call
+round). The response is suitable for context gauges and compaction warnings:
+
+```json
+{
+  "thread_id": "thread_...",
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro",
+  "estimated_input_tokens": 742000,
+  "context_window_tokens": 1000000,
+  "remaining_context_tokens": 258000,
+  "used_percent": 74.2,
+  "auto_compact_enabled": true,
+  "auto_compact_threshold_tokens": 900000,
+  "auto_compact_threshold_percent": 90.0,
+  "source": "active_engine"
+}
+```
+
+`remaining_context_tokens` is raw context room (`window - estimated input`),
+before response headroom. Normal V4 turns reserve up to 65,536 output tokens
+plus 1,024 safety tokens; near the route boundary, the request output cap is
+clamped to the generation room that remains. `used_percent` is clamped to
+0–100. The endpoint loads the thread engine if needed, then returns the latest
+cached engine snapshot when one is already available.
 
 Thread forks are sibling runtime threads, not an in-place tree projection.
 `thread.forked` events include `source_thread_id`; internal backtrack-aware
@@ -520,9 +549,15 @@ Compatibility notes:
 
 Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `turn.lifecycle`, `turn.steered`, `turn.interrupt_requested`,
-`turn.completed`, `item.started`, `item.delta`, `item.completed`,
+`turn.nudged`, `turn.completed`, `item.started`, `item.delta`, `item.completed`,
 `item.failed`, `item.interrupted`, `approval.required`, `approval.decided`,
-`approval.timeout`, `sandbox.denied`.
+`approval.timeout`, `sandbox.denied`, `context.updated`.
+
+`context.updated` carries the same payload as
+`GET /v1/threads/{id}/context`. It is emitted after the engine publishes an
+updated session snapshot, including transcript changes from model rounds, tool
+results, steering, and compaction. Clients can subscribe for responsive gauges
+and use the GET endpoint for initial state or reconnect recovery.
 
 `approval.required` events may include a `matched_rule` string when an
 execution-policy rule caused the prompt. This field is explanatory metadata for
@@ -622,6 +657,8 @@ a read-only inspection surface:
 |---|---|
 | List persisted agent runs | `GET /v1/agent-runs` |
 | Inspect one run | `GET /v1/agent-runs/{run_id}` |
+| Cancel a live agent run | `POST /v1/threads/{thread_id}/agent-runs/{agent_id}/cancel` |
+| Nudge a parent to inspect agent runs | `POST /v1/threads/{thread_id}/agent-runs/nudge` |
 
 The response is the same worker-record shape surfaced by `agent` receipts:
 `spec.run_id`, `actor_kind`, lifecycle `status`, bounded `events`,
@@ -629,9 +666,42 @@ The response is the same worker-record shape surfaced by `agent` receipts:
 falls back to the worker id for older records, and `{run_id}` may be either the
 run id or the worker id.
 
-These endpoints do not start, cancel, or steer sub-agents. The API surface
-exists so app/editor/headless clients can inspect the same handoff receipts that
-the TUI and parent model see.
+Cancellation is accepted only while the owning thread engine is already
+active. The route never loads or starts an engine: it forwards
+`CancelSubAgent` to the existing engine handle and returns HTTP `202` with
+`{"accepted":true,"thread_id":"...","agent_id":"..."}` after the request is
+queued. Clients can detect this optional surface through
+`GET /v1/runtime/info` at `experimental.agent_run_cancel`; older runtimes omit
+the field and deserialize it as `false`.
+
+The watchdog nudge body is `{ "agent_ids": ["agent_...", ...] }`. IDs are
+validated, sorted, and deduplicated; at least one is required. The runtime
+constructs the fixed internal watchdog prompt itself, injects it with
+non-authoritative `runtime` provenance, and records an internal status item
+rather than a user-message item. Busy turns emit `turn.nudged`; idle parents
+instead emit a new internal `turn.started` before dispatch. A queued nudge
+returns HTTP `202`:
+
+```json
+{
+  "accepted": true,
+  "coalesced": false,
+  "thread_id": "thread_...",
+  "turn_id": "turn_...",
+  "agent_ids": ["agent_a", "agent_b"]
+}
+```
+
+If an earlier watchdog nudge is still waiting to enter the same active turn,
+the route returns the same shape with `accepted: false` and `coalesced: true`.
+For an idle parent, the runtime first persists a hidden internal turn, attaches
+its event monitor, and only then dispatches the watchdog prompt. The response is
+the same HTTP `202` shape with that new `turn_id`. Root sub-agent completions use
+the same durable ordering automatically: `turn.started` carries
+`source: "subagent_completion"`, `internal: true`, and the exact `agent_ids`
+before any engine output for the adjudication turn. Detect the optional watchdog
+surface through `GET /v1/runtime/info` at `experimental.agent_run_nudge`; older
+runtimes omit the field and deserialize it as `false`.
 
 ## Session lifecycle (native UI supervision)
 

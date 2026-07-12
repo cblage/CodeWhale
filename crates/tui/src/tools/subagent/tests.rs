@@ -52,6 +52,7 @@ fn make_worker_spec(worker_id: &str, workspace: PathBuf) -> AgentWorkerSpec {
         session_name: Some(worker_id.to_string()),
         objective: "inspect the repo".to_string(),
         role: Some("explorer".to_string()),
+        profile: None,
         agent_type: SubAgentType::Explore,
         model: "deepseek-v4-flash".to_string(),
         workspace,
@@ -414,6 +415,28 @@ fn headless_worker_records_persist_with_subagent_state() {
             .iter()
             .any(|event| event.status == AgentWorkerStatus::Failed)
     );
+}
+
+#[test]
+fn worker_spec_profile_round_trips_and_old_records_default_to_none() {
+    let mut spec = make_worker_spec("agent_profiled", PathBuf::from("/tmp"));
+    spec.profile = Some("engineering-review-subagent".to_string());
+
+    let mut value = serde_json::to_value(&spec).expect("serialize profiled worker spec");
+    let restored: AgentWorkerSpec =
+        serde_json::from_value(value.clone()).expect("deserialize profiled worker spec");
+    assert_eq!(
+        restored.profile.as_deref(),
+        Some("engineering-review-subagent")
+    );
+
+    value
+        .as_object_mut()
+        .expect("worker spec object")
+        .remove("profile");
+    let legacy: AgentWorkerSpec =
+        serde_json::from_value(value).expect("deserialize legacy profile-less worker spec");
+    assert_eq!(legacy.profile, None);
 }
 
 fn init_subagent_git_repo() -> tempfile::TempDir {
@@ -1044,6 +1067,15 @@ fn test_parse_spawn_request_accepts_child_thinking() {
     });
     let parsed = parse_spawn_request(&input).expect("spawn request should parse");
     assert_eq!(parsed.thinking, SubAgentThinking::Auto);
+
+    let parsed =
+        parse_spawn_request(&json!({"prompt": "inherit deliberately", "thinking": "inherit"}))
+            .expect("explicit inherit should parse");
+    assert_eq!(parsed.thinking, SubAgentThinking::Inherit);
+
+    let parsed = parse_spawn_request(&json!({"prompt": "use defaults"}))
+        .expect("omitted thinking should parse");
+    assert_eq!(parsed.thinking, SubAgentThinking::Unspecified);
 }
 
 #[test]
@@ -1231,6 +1263,84 @@ fn test_apply_spawn_profile_accepts_agreeing_explicit_type() {
     assert_eq!(member.id, "reviewer");
     assert_eq!(request.agent_type, SubAgentType::Review);
     assert_eq!(request.assignment.role.as_deref(), Some("reviewer"));
+}
+
+#[test]
+fn spawn_thinking_precedence_is_explicit_then_profile_then_session() {
+    let mut profile = custom_fleet_profile("reviewer");
+    profile.reasoning_effort = Some("high".to_string());
+    let roster = fleet_roster_with("auditor", profile);
+    let runtime = stub_runtime().with_reasoning_effort(Some("medium".to_string()), false);
+
+    let mut request =
+        parse_spawn_request(&json!({"prompt": "x", "profile": "auditor"})).expect("parse");
+    apply_spawn_profile(&mut request, &roster).expect("profile should resolve");
+    assert_eq!(
+        fallback_subagent_assignment_route(
+            &runtime,
+            None,
+            ModelRoute::Inherit,
+            request.thinking,
+            "x",
+        )
+        .reasoning_effort
+        .as_deref(),
+        Some("high"),
+        "profile reasoning should beat the parent/session tier when thinking is omitted"
+    );
+
+    let mut request =
+        parse_spawn_request(&json!({"prompt": "x", "profile": "auditor", "thinking": "max"}))
+            .expect("parse");
+    apply_spawn_profile(&mut request, &roster).expect("profile should resolve");
+    assert_eq!(
+        fallback_subagent_assignment_route(
+            &runtime,
+            None,
+            ModelRoute::Inherit,
+            request.thinking,
+            "x",
+        )
+        .reasoning_effort
+        .as_deref(),
+        Some("max"),
+        "explicit thinking should beat the profile tier"
+    );
+
+    let mut request =
+        parse_spawn_request(&json!({"prompt": "x", "profile": "auditor", "thinking": "inherit"}))
+            .expect("parse");
+    apply_spawn_profile(&mut request, &roster).expect("profile should resolve");
+    assert_eq!(request.thinking, SubAgentThinking::Inherit);
+    assert_eq!(
+        fallback_subagent_assignment_route(
+            &runtime,
+            None,
+            ModelRoute::Faster,
+            request.thinking,
+            "x",
+        )
+        .reasoning_effort
+        .as_deref(),
+        Some("medium"),
+        "explicit inherit should bypass both the profile and faster-lane defaults"
+    );
+
+    let request = parse_spawn_request(&json!({"prompt": "x"})).expect("parse");
+    assert_eq!(request.thinking, SubAgentThinking::Unspecified);
+    assert_eq!(
+        fallback_subagent_assignment_route(
+            &runtime,
+            None,
+            ModelRoute::Inherit,
+            request.thinking,
+            "x",
+        )
+        .reasoning_effort
+        .as_deref(),
+        Some("medium"),
+        "without explicit or profile thinking, the parent/session tier should win"
+    );
 }
 
 #[test]
@@ -2148,7 +2258,7 @@ fn subagent_model_strength_faster_uses_known_family_sibling() {
         &runtime,
         None,
         ModelRoute::Faster,
-        SubAgentThinking::Inherit,
+        SubAgentThinking::Unspecified,
         "inspect one file",
     );
     assert_eq!(route.model_route, ModelRoute::Faster);
@@ -2164,7 +2274,7 @@ fn subagent_model_strength_explicit_model_wins_over_faster() {
         &runtime,
         Some("deepseek-v4-pro".to_string()),
         ModelRoute::Faster,
-        SubAgentThinking::Inherit,
+        SubAgentThinking::Unspecified,
         "inspect one file",
     );
     assert_eq!(
@@ -2273,7 +2383,7 @@ async fn route_resolution_matrix_uses_explicit_model_strength_routes() {
             case.prompt,
             &case.agent_type,
             case.requested_route.clone(),
-            SubAgentThinking::Inherit,
+            SubAgentThinking::Unspecified,
         )
         .await;
         assert_eq!(
@@ -5851,7 +5961,7 @@ async fn faster_route_on_provider_without_known_sibling_stays_on_parent_model() 
             prompt,
             &SubAgentType::General,
             ModelRoute::Faster,
-            SubAgentThinking::Inherit,
+            SubAgentThinking::Unspecified,
         )
         .await;
         assert_eq!(route.model, "qwen3:32b", "prompt {prompt:?}");
@@ -5870,7 +5980,7 @@ fn faster_route_uses_known_deepseek_and_glm_family_siblings() {
         &deepseek,
         None,
         ModelRoute::Faster,
-        SubAgentThinking::Inherit,
+        SubAgentThinking::Unspecified,
         "inspect one file",
     );
     assert_eq!(route.model, "deepseek-v4-flash");
@@ -5881,7 +5991,7 @@ fn faster_route_uses_known_deepseek_and_glm_family_siblings() {
         &zai,
         None,
         ModelRoute::Faster,
-        SubAgentThinking::Inherit,
+        SubAgentThinking::Unspecified,
         "inspect docs",
     );
     // GLM-5.2 faster/explore children route to GLM-5-Turbo (same-family fast
@@ -5895,7 +6005,7 @@ fn faster_route_uses_known_deepseek_and_glm_family_siblings() {
         &openrouter,
         None,
         ModelRoute::Faster,
-        SubAgentThinking::Inherit,
+        SubAgentThinking::Unspecified,
         "inspect docs",
     );
     assert_eq!(route.model, "z-ai/glm-5-turbo");
@@ -5934,7 +6044,7 @@ fn faster_route_remaps_stale_deepseek_model_for_sakana_provider() {
         &runtime,
         None,
         ModelRoute::Faster,
-        SubAgentThinking::Inherit,
+        SubAgentThinking::Unspecified,
         "quick scan",
     );
     let validated = ensure_subagent_model_for_provider(&runtime, &route.model_route, route.model)
@@ -5999,7 +6109,7 @@ fn gpt55_faster_route_stays_on_gpt55_with_low_reasoning() {
         &codex,
         None,
         ModelRoute::Faster,
-        SubAgentThinking::Inherit,
+        SubAgentThinking::Unspecified,
         "inspect one file",
     );
     assert_eq!(route.model, "gpt-5.5");

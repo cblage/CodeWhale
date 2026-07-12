@@ -108,6 +108,48 @@ fn runtime_compaction_uses_provider_route_context() {
 }
 
 #[test]
+fn context_snapshot_reports_raw_route_occupancy() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "measure the active request context".to_string(),
+            cache_control: None,
+        }],
+    }];
+
+    let snapshot = manager.context_snapshot_for_messages(
+        "thr_context",
+        ApiProvider::Deepseek,
+        DEFAULT_TEXT_MODEL,
+        &messages,
+        None,
+        "test_fixture",
+    )?;
+
+    let expected_window = u64::from(route_context_window_tokens(
+        ApiProvider::Deepseek,
+        DEFAULT_TEXT_MODEL,
+        None,
+    ));
+    assert_eq!(snapshot.thread_id, "thr_context");
+    assert_eq!(snapshot.provider, ApiProvider::Deepseek.as_str());
+    assert_eq!(snapshot.model, DEFAULT_TEXT_MODEL);
+    assert_eq!(snapshot.context_window_tokens, expected_window);
+    assert!(snapshot.estimated_input_tokens > 0);
+    assert_eq!(
+        snapshot.remaining_context_tokens,
+        expected_window.saturating_sub(snapshot.estimated_input_tokens)
+    );
+    let expected_percent = snapshot.estimated_input_tokens as f64 / expected_window as f64 * 100.0;
+    assert!((snapshot.used_percent - expected_percent).abs() < f64::EPSILON);
+    assert_eq!(snapshot.source, "test_fixture");
+    assert!(snapshot.auto_compact_threshold_tokens <= expected_window);
+    assert!((0.0..=100.0).contains(&snapshot.auto_compact_threshold_percent));
+    Ok(())
+}
+
+#[test]
 fn legacy_turn_record_has_no_invented_route_provenance() {
     let turn = sample_turn("thr_legacy", "turn_legacy", RuntimeTurnStatus::Completed);
     let mut value = serde_json::to_value(turn).expect("serialize turn");
@@ -197,6 +239,7 @@ async fn install_mock_engine(
             active_turn: None,
             route_provider: ApiProvider::Deepseek,
             route_model: DEFAULT_TEXT_MODEL.to_string(),
+            context_usage: None,
         },
     );
     touch_lru(&mut active.lru, thread_id);
@@ -587,9 +630,11 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
                 interrupt_requested: false,
                 auto_approve: true,
                 trust_mode: false,
+                pending_agent_nudge: None,
             }),
             route_provider: ApiProvider::Deepseek,
             route_model: DEFAULT_TEXT_MODEL.to_string(),
+            context_usage: None,
         },
     );
     active.engines.insert(
@@ -601,9 +646,11 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
                 interrupt_requested: false,
                 auto_approve: true,
                 trust_mode: false,
+                pending_agent_nudge: None,
             }),
             route_provider: ApiProvider::Deepseek,
             route_model: DEFAULT_TEXT_MODEL.to_string(),
+            context_usage: None,
         },
     );
     active.lru.push_back("thr_a".to_string());
@@ -1045,6 +1092,7 @@ async fn update_thread_workspace_rejects_active_turn() -> Result<()> {
             interrupt_requested: false,
             auto_approve: false,
             trust_mode: false,
+            pending_agent_nudge: None,
         });
     }
 
@@ -1119,6 +1167,99 @@ async fn start_turn_passes_effective_auto_approve_to_engine() -> Result<()> {
 
     match rx_op.recv().await {
         Some(Op::SendMessage { auto_approve, .. }) => assert!(auto_approve),
+        other => panic!("expected SendMessage op, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn start_turn_passes_requested_reasoning_effort_to_fixed_model_engine() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            model: Some(DEFAULT_TEXT_MODEL.to_string()),
+            workspace: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            archived: false,
+            system_prompt: None,
+            task_id: None,
+            ..Default::default()
+        })
+        .await?;
+
+    let harness = install_mock_engine(&manager, &thread.id).await;
+    let mut rx_op = harness.rx_op;
+
+    manager
+        .start_turn(
+            &thread.id,
+            serde_json::from_value(serde_json::json!({
+                "prompt": "preserve reasoning mode",
+                "reasoning_effort": "max"
+            }))?,
+        )
+        .await?;
+
+    match rx_op.recv().await {
+        Some(Op::SendMessage {
+            reasoning_effort,
+            reasoning_effort_auto,
+            ..
+        }) => {
+            assert_eq!(reasoning_effort.as_deref(), Some("max"));
+            assert!(!reasoning_effort_auto);
+        }
+        other => panic!("expected SendMessage op, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn start_turn_marks_requested_auto_reasoning_for_fixed_model() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            model: Some(DEFAULT_TEXT_MODEL.to_string()),
+            workspace: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            archived: false,
+            system_prompt: None,
+            task_id: None,
+            ..Default::default()
+        })
+        .await?;
+
+    let harness = install_mock_engine(&manager, &thread.id).await;
+    let mut rx_op = harness.rx_op;
+
+    manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "resolve automatic reasoning".to_string(),
+                reasoning_effort: Some("auto".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    match rx_op.recv().await {
+        Some(Op::SendMessage {
+            reasoning_effort,
+            reasoning_effort_auto,
+            ..
+        }) => {
+            assert_eq!(reasoning_effort.as_deref(), Some("auto"));
+            assert!(reasoning_effort_auto);
+        }
         other => panic!("expected SendMessage op, got {other:?}"),
     }
 
@@ -1454,6 +1595,386 @@ async fn get_thread_detail_batches_items_by_turn_without_losing_order() -> Resul
             "item_detail_first_late",
             "item_detail_second"
         ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancel_sub_agent_requires_loaded_engine_and_sends_targeted_op() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            workspace: None,
+            ..Default::default()
+        })
+        .await?;
+
+    let err = manager
+        .cancel_sub_agent(&thread.id, "agent_unloaded")
+        .await
+        .expect_err("an unloaded thread must not be lazily started for cancellation");
+    assert!(format!("{err:#}").contains("is not active"));
+    assert!(!manager.active.lock().await.engines.contains_key(&thread.id));
+
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    manager.cancel_sub_agent(&thread.id, "agent_target").await?;
+
+    match tokio::time::timeout(Duration::from_secs(1), harness.rx_op.recv()).await {
+        Ok(Some(Op::CancelSubAgent { agent_id })) => assert_eq!(agent_id, "agent_target"),
+        other => panic!("expected targeted CancelSubAgent op, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn agent_nudge_ids_are_validated_sorted_and_deduplicated() {
+    let ids = normalize_agent_nudge_ids(vec![
+        "agent_b".to_string(),
+        "agent_a".to_string(),
+        "agent_b".to_string(),
+    ])
+    .expect("valid agent ids");
+    assert_eq!(ids, vec!["agent_a", "agent_b"]);
+    assert!(normalize_agent_nudge_ids(Vec::new()).is_err());
+    assert!(normalize_agent_nudge_ids(vec!["agent bad".to_string()]).is_err());
+}
+
+#[tokio::test]
+async fn agent_nudge_is_runtime_input_status_only_and_coalesces_pending_requests() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            workspace: None,
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    let turn = sample_turn(&thread.id, "turn_watchdog", RuntimeTurnStatus::InProgress);
+    manager.store.save_turn(&turn)?;
+    {
+        let mut active = manager.active.lock().await;
+        let state = active.engines.get_mut(&thread.id).expect("mock engine");
+        state.active_turn = Some(ActiveTurnState {
+            turn_id: turn.id.clone(),
+            interrupt_requested: false,
+            auto_approve: false,
+            trust_mode: false,
+            pending_agent_nudge: None,
+        });
+    }
+
+    let first = manager
+        .nudge_sub_agents(
+            &thread.id,
+            vec!["agent_b".to_string(), "agent_a".to_string()],
+        )
+        .await?;
+    assert!(first.accepted);
+    assert!(!first.coalesced);
+    assert_eq!(first.agent_ids, vec!["agent_a", "agent_b"]);
+
+    let duplicate = manager
+        .nudge_sub_agents(&thread.id, vec!["agent_a".to_string()])
+        .await?;
+    assert!(!duplicate.accepted);
+    assert!(duplicate.coalesced);
+
+    let input = tokio::time::timeout(Duration::from_secs(1), harness.rx_steer.recv())
+        .await?
+        .context("missing watchdog input")?;
+    assert_eq!(
+        input.provenance,
+        crate::core::ops::UserInputProvenance::Runtime
+    );
+    assert!(!input.provenance.can_authorize_work());
+    assert!(input.content.contains("kind=\"subagent_watchdog\""));
+    assert!(input.content.contains("[\"agent_a\",\"agent_b\"]"));
+    assert!(!input.content.contains("Input authority: external"));
+    drop(input);
+
+    let stored_turn = manager.store.load_turn(&turn.id)?;
+    assert_eq!(stored_turn.steer_count, 0);
+    let items = stored_turn
+        .item_ids
+        .iter()
+        .map(|item_id| manager.store.load_item(item_id))
+        .collect::<Result<Vec<_>>>()?;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, TurnItemKind::Status);
+    assert_eq!(
+        items[0]
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("source"))
+            .and_then(Value::as_str),
+        Some("subagent_watchdog")
+    );
+    assert!(
+        items
+            .iter()
+            .all(|item| item.kind != TurnItemKind::UserMessage)
+    );
+    let events = manager.events_since(&thread.id, None)?;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event == "turn.nudged")
+            .count(),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_nudge_on_idle_parent_creates_durable_runtime_turn() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            workspace: None,
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+
+    let result = manager
+        .nudge_sub_agents(&thread.id, vec!["agent_idle".to_string()])
+        .await?;
+    assert!(result.accepted);
+    assert!(!result.coalesced);
+
+    let op = tokio::time::timeout(Duration::from_secs(1), harness.rx_op.recv())
+        .await?
+        .context("missing idle watchdog turn op")?;
+    match op {
+        Op::SendMessage {
+            content,
+            provenance,
+            ..
+        } => {
+            assert_eq!(provenance, UserInputProvenance::Runtime);
+            assert!(content.contains("kind=\"subagent_watchdog\""));
+            assert!(content.contains("agent_idle"));
+        }
+        other => panic!("expected idle watchdog SendMessage, got {other:?}"),
+    }
+
+    let stored = manager.store.load_turn(&result.turn_id)?;
+    assert_eq!(stored.status, RuntimeTurnStatus::InProgress);
+    assert_eq!(
+        manager.active_turn_id(&thread.id).await.as_deref(),
+        Some(result.turn_id.as_str())
+    );
+    let status_item = manager.store.load_item(&stored.item_ids[0])?;
+    assert_eq!(status_item.kind, TurnItemKind::Status);
+    assert_eq!(
+        status_item
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("source"))
+            .and_then(Value::as_str),
+        Some("subagent_watchdog")
+    );
+    assert_eq!(
+        status_item
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("internal"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+
+    harness
+        .tx_event
+        .send(EngineEvent::TurnStarted {
+            turn_id: "engine_idle_watchdog".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "Agents checked and adjudicated.".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            usage: Usage::default(),
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+
+    let completed =
+        wait_for_terminal_turn(&manager, &result.turn_id, Duration::from_secs(2)).await?;
+    assert_eq!(completed.status, RuntimeTurnStatus::Completed);
+    assert_eq!(manager.active_turn_id(&thread.id).await, None);
+    assert!(manager.events_since(&thread.id, None)?.iter().any(|event| {
+        event.event == "turn.started"
+            && event.payload.get("source").and_then(Value::as_str) == Some("subagent_watchdog")
+    }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn idle_internal_turn_dispatch_failure_is_terminal_and_releases_thread() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            workspace: None,
+            ..Default::default()
+        })
+        .await?;
+    let harness = install_mock_engine(&manager, &thread.id).await;
+    drop(harness.rx_op);
+
+    let err = manager
+        .nudge_sub_agents(&thread.id, vec!["agent_closed".to_string()])
+        .await
+        .expect_err("closed engine must reject internal turn dispatch");
+    assert!(format!("{err:#}").contains("engine closed"));
+
+    let updated_thread = manager.get_thread(&thread.id).await?;
+    let turn_id = updated_thread
+        .latest_turn_id
+        .context("failed internal turn was not persisted")?;
+    let turn = manager.store.load_turn(&turn_id)?;
+    assert_eq!(turn.status, RuntimeTurnStatus::Failed);
+    assert!(turn.ended_at.is_some());
+    assert_eq!(manager.active_turn_id(&thread.id).await, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn idle_completion_waits_for_user_turn_then_dispatches_durable_handoff() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            workspace: None,
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+
+    let user_turn = sample_turn(&thread.id, "turn_user_race", RuntimeTurnStatus::InProgress);
+    manager.store.save_turn(&user_turn)?;
+    {
+        let mut active = manager.active.lock().await;
+        active
+            .engines
+            .get_mut(&thread.id)
+            .expect("mock engine")
+            .active_turn = Some(ActiveTurnState {
+            turn_id: user_turn.id.clone(),
+            interrupt_requested: false,
+            auto_approve: false,
+            trust_mode: false,
+            pending_agent_nudge: None,
+        });
+    }
+
+    let (handoff_tx, handoff_rx) = tokio::sync::mpsc::unbounded_channel();
+    manager.spawn_idle_subagent_handoff_listener(thread.id.clone(), handoff_rx);
+    let payload = "real child result\n<codewhale:subagent.done>{\"agent_id\":\"agent_done\"}</codewhale:subagent.done>";
+    handoff_tx.send(IdleSubAgentHandoffRequest {
+        agent_ids: vec!["agent_done".to_string()],
+        content: payload.to_string(),
+    })?;
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(75), harness.rx_op.recv())
+            .await
+            .is_err(),
+        "completion must not dispatch into the user-owned turn"
+    );
+
+    {
+        let mut active = manager.active.lock().await;
+        active
+            .engines
+            .get_mut(&thread.id)
+            .expect("mock engine")
+            .active_turn = None;
+    }
+
+    let op = tokio::time::timeout(Duration::from_secs(1), harness.rx_op.recv())
+        .await?
+        .context("missing durable completion handoff op")?;
+    match op {
+        Op::SendMessage {
+            content,
+            provenance,
+            ..
+        } => {
+            assert_eq!(provenance, UserInputProvenance::SubAgentHandoff);
+            assert_eq!(content, payload);
+        }
+        other => panic!("expected completion SendMessage, got {other:?}"),
+    }
+
+    let turn_id = manager
+        .active_turn_id(&thread.id)
+        .await
+        .context("completion turn was not reserved")?;
+    let turn = manager.store.load_turn(&turn_id)?;
+    assert_eq!(turn.status, RuntimeTurnStatus::InProgress);
+    assert!(manager.events_since(&thread.id, None)?.iter().any(|event| {
+        event.event == "turn.started"
+            && event.payload.get("source").and_then(Value::as_str) == Some("subagent_completion")
+            && event
+                .payload
+                .get("agent_ids")
+                .and_then(Value::as_array)
+                .is_some_and(|ids| ids == &vec![Value::String("agent_done".to_string())])
+    }));
+
+    harness
+        .tx_event
+        .send(EngineEvent::TurnStarted {
+            turn_id: "engine_completion_handoff".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageStarted { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageDelta {
+            index: 0,
+            content: "Final adjudication".to_string(),
+        })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::MessageComplete { index: 0 })
+        .await?;
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            usage: Usage::default(),
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    assert_eq!(
+        wait_for_terminal_turn(&manager, &turn_id, Duration::from_secs(2))
+            .await?
+            .status,
+        RuntimeTurnStatus::Completed
     );
     Ok(())
 }
@@ -2263,7 +2784,7 @@ async fn steer_turn_on_active_turn_records_item_and_event() -> Result<()> {
                 })
                 .await;
             if let Some(steer) = rx_steer.recv().await {
-                let _ = steer_seen_tx.send(steer);
+                let _ = steer_seen_tx.send(steer.content);
             }
             let _ = tx_event
                 .send(EngineEvent::MessageStarted { index: 0 })

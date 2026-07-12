@@ -1,6 +1,8 @@
 use super::*;
 
-use super::context::{COMPACTION_SUMMARY_MARKER, TURN_MAX_OUTPUT_TOKENS};
+use super::context::{
+    API_MAX_OUTPUT_TOKENS, COMPACTION_SUMMARY_MARKER, max_output_tokens_for_route_at_input,
+};
 use super::turn_loop::{registered_tool_approval_required, tool_error_degradation_runtime_hint};
 use crate::config::ApiProvider;
 use crate::models::{SystemBlock, Usage};
@@ -17,6 +19,40 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 const WORKING_SET_SUMMARY_MARKER: &str = "## Repo Working Set";
+
+#[tokio::test]
+async fn runtime_idle_completion_is_handed_off_without_emitting_engine_events() {
+    let (handoff_tx, mut handoff_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (mut engine, handle) = Engine::new_with_idle_subagent_handoff(
+        EngineConfig::default(),
+        &Config::default(),
+        Some(handoff_tx),
+    );
+    let completion = SubAgentCompletion {
+        agent_id: "agent_done".to_string(),
+        payload: "real result\n<codewhale:subagent.done>{\"agent_id\":\"agent_done\"}</codewhale:subagent.done>".to_string(),
+    };
+
+    engine.handle_idle_subagent_completion(completion).await;
+
+    let request = handoff_rx.recv().await.expect("runtime handoff request");
+    assert_eq!(request.agent_ids, vec!["agent_done"]);
+    assert!(request.content.contains("real result"));
+    assert!(request.content.contains("kind=\"subagent_completion\""));
+    assert!(
+        engine
+            .delivered_subagent_completion_ids
+            .contains("agent_done")
+    );
+
+    let mut events = handle.rx_event.write().await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), events.recv())
+            .await
+            .is_err(),
+        "runtime-hosted completion must not emit before the host starts its durable turn"
+    );
+}
 
 #[test]
 fn subagent_mailbox_keeps_lifecycle_events_reliable() {
@@ -4835,13 +4871,59 @@ fn context_budget_reserves_output_and_headroom() {
     // Serialize with other tests that mutate DEEPSEEK_MAX_OUTPUT_TOKENS so
     // the internal effective_max_output_tokens() call sees a stable env.
     let _lock = lock_test_env();
-    // V4 has a 1M context window — the only family that comfortably hosts
-    // a 256K output reservation without saturating the input budget to 0.
+    // V4 has a 1M context window. The safety budget reserves the same 64K
+    // maximum output used by the request instead of an obsolete 256K value.
     let budget = context_input_budget_for_provider(ApiProvider::Deepseek, "deepseek-v4-pro")
         .expect("deepseek-v4-pro should have a known context window");
     let v4_window: usize = 1_000_000;
-    let expected = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
+    let expected = v4_window - (API_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
     assert_eq!(budget, expected);
+}
+
+#[test]
+fn large_route_metadata_reserves_the_normal_64k_request_cap() {
+    let _lock = lock_test_env();
+    let limits = codewhale_config::route::RouteLimits {
+        context_tokens: Some(1_000_000),
+        input_tokens: None,
+        // The provider advertises its full model capability, but normal turns
+        // intentionally request at most 64K and should reserve the same amount.
+        output_tokens: Some(384_000),
+    };
+
+    let budget =
+        route_context_budget_for_route(ApiProvider::Deepseek, "deepseek-v4-pro", Some(limits), 0)
+            .expect("V4 route should produce a context budget");
+
+    assert_eq!(budget.output_cap_tokens, 65_536);
+    assert_eq!(budget.available_input_tokens, 933_440);
+}
+
+#[test]
+fn dynamic_output_cap_uses_remaining_generation_room_near_the_window() {
+    let _lock = lock_test_env();
+    let cases = [
+        (800_000, Some(65_536)),
+        (900_000, Some(65_536)),
+        (933_440, Some(65_536)),
+        (950_000, Some(48_976)),
+        (998_000, Some(976)),
+        (998_976, None),
+        (1_000_000, None),
+    ];
+
+    for (input_tokens, expected) in cases {
+        assert_eq!(
+            max_output_tokens_for_route_at_input(
+                ApiProvider::Deepseek,
+                "deepseek-v4-pro",
+                None,
+                input_tokens,
+            ),
+            expected,
+            "input_tokens={input_tokens}"
+        );
+    }
 }
 
 #[test]
@@ -5091,19 +5173,17 @@ fn internal_context_budget_tiers_reserved_output_by_window() {
     // Serialize with other tests that mutate DEEPSEEK_MAX_OUTPUT_TOKENS so
     // both branches below see a stable env.
     let _lock = lock_test_env();
-    // Large-context (>=500K) models reserve the full TURN_MAX_OUTPUT_TOKENS
-    // headroom so long V4 sessions don't compact prematurely.
+    // Large-context models reserve the same 64K cap used by the request so
+    // long V4 sessions do not compact based on output that cannot be requested.
     let internal_budget =
         context_input_budget_for_provider(ApiProvider::Deepseek, "deepseek-v4-pro")
             .expect("V4 should have a known context window");
     let v4_window: usize = 1_000_000;
-    let expected_internal = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
+    let expected_internal = v4_window - (API_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
     assert_eq!(internal_budget, expected_internal);
 
-    // Sub-500K windows cross into the effective-cap branch: a 256K self-hosted
-    // deployment must yield a usable positive budget rather than None. The
-    // previous formula reserved the full 262K and computed 256K - 262K - 1K,
-    // which underflowed to None and silently disabled preflight/recovery.
+    // Smaller windows also use the effective request cap and retain a usable
+    // positive budget rather than underflowing and disabling preflight.
     let small_window_budget =
         context_input_budget_for_provider(ApiProvider::Openai, "qwen3-32b-256k")
             .expect("a 256K-suffix model must yield Some budget via the effective-cap branch");

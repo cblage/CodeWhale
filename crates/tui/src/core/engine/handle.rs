@@ -11,7 +11,7 @@
 use anyhow::Result;
 
 use super::approval::{ApprovalDecision, UserInputDecision};
-use super::{CancelReason, EngineHandle, Op, UserInputResponse};
+use super::{CancelReason, EngineHandle, InFlightTurnInput, Op, UserInputResponse};
 
 impl EngineHandle {
     /// Send an operation to the engine
@@ -135,8 +135,27 @@ impl EngineHandle {
 
     /// Steer an in-flight turn with additional user input.
     pub async fn steer(&self, content: impl Into<String>) -> Result<()> {
-        self.tx_steer.send(content.into()).await?;
+        self.tx_steer
+            .send(InFlightTurnInput::external_user(content.into()))
+            .await?;
         Ok(())
+    }
+
+    /// Queue a non-authoritative runtime nudge for an in-flight turn.
+    ///
+    /// The returned receiver resolves only after the turn loop has inserted
+    /// the nudge into session context. If the turn ends first and drains the
+    /// stale input, the receiver closes; either outcome lets the caller clear
+    /// its pending-nudge coalescing state.
+    pub(crate) async fn nudge_runtime(
+        &self,
+        content: impl Into<String>,
+    ) -> Result<tokio::sync::oneshot::Receiver<()>> {
+        let (applied_tx, applied_rx) = tokio::sync::oneshot::channel();
+        self.tx_steer
+            .send(InFlightTurnInput::runtime(content.into(), applied_tx))
+            .await?;
+        Ok(applied_rx)
     }
 
     /// Request a snapshot of the current session state.

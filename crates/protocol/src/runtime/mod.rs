@@ -56,6 +56,10 @@ pub struct RuntimeCapabilities {
 pub struct RuntimeExperimentalCapabilities {
     #[serde(default)]
     pub environments: bool,
+    #[serde(default)]
+    pub agent_run_cancel: bool,
+    #[serde(default)]
+    pub agent_run_nudge: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +347,22 @@ mod tests {
         assert_eq!(obj.get("threads").unwrap(), &json!(true));
         assert_eq!(obj.get("external_tools").unwrap(), &json!(false));
         assert!(obj.contains_key("worker_runtime"));
+    }
+
+    #[test]
+    fn runtime_experimental_capabilities_advertise_agent_controls_additively() {
+        let older: RuntimeExperimentalCapabilities = serde_json::from_str("{}").unwrap();
+        assert!(!older.agent_run_cancel);
+        assert!(!older.agent_run_nudge);
+
+        let advertised = RuntimeExperimentalCapabilities {
+            agent_run_cancel: true,
+            agent_run_nudge: true,
+            ..RuntimeExperimentalCapabilities::default()
+        };
+        let value = serde_json::to_value(&advertised).unwrap();
+        assert_eq!(value["agent_run_cancel"], json!(true));
+        assert_eq!(value["agent_run_nudge"], json!(true));
     }
 
     #[test]

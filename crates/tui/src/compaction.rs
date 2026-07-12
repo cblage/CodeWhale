@@ -48,14 +48,14 @@ impl Default for CompactionConfig {
             enabled: true,
             // v0.8.11: 50K was a 128K-era leftover that biased every
             // unconfigured caller toward "compact almost immediately on V4."
-            // Bumped to 800K (80% of V4's 1M window) so the dead-code
+            // Bumped to 900K (90% of V4's 1M window) so the dead-code
             // default matches the hard automatic compaction guardrail. This
             // is intentionally later than the model-visible 60% "suggest
             // /compact during sustained work" guidance so automatic
             // replacement compaction stays a late continuity guardrail.
             // Real call sites override this via
             // `compaction_threshold_for_model_and_effort`.
-            token_threshold: 800_000,
+            token_threshold: 900_000,
             model: DEFAULT_TEXT_MODEL.to_string(),
             effective_context_window: None,
             cache_summary: true,

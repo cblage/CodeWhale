@@ -553,6 +553,9 @@ pub struct AgentWorkerSpec {
     pub objective: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Canonical Fleet roster profile id selected for this worker, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     pub agent_type: SubAgentType,
     pub model: String,
     pub workspace: PathBuf,
@@ -1076,6 +1079,7 @@ fn run_git(workspace: &Path, args: &[&str]) -> Option<String> {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SubAgentSpawnOptions {
     pub name: Option<String>,
+    pub profile: Option<String>,
     pub model: Option<String>,
     pub model_route: Option<ModelRoute>,
     pub nickname: Option<String>,
@@ -1150,6 +1154,10 @@ impl SubAgentModelStrength {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubAgentThinking {
+    /// No spawn-level or profile-level reasoning tier was supplied. This is
+    /// distinct from explicit `inherit` so the faster-lane default can apply
+    /// only when the caller truly left thinking unspecified.
+    Unspecified,
     Inherit,
     Auto,
     Effort(ReasoningEffort),
@@ -2870,6 +2878,7 @@ impl SubAgentManager {
             session_name: Some(agent.session_name.clone()),
             objective: assignment.objective.clone(),
             role: assignment.role.clone(),
+            profile: options.profile.clone(),
             agent_type: agent_type.clone(),
             model: agent.model.clone(),
             workspace: agent.workspace.clone(),
@@ -3763,7 +3772,7 @@ impl ToolSpec for AgentTool {
                 },
                 "profile": {
                     "type": "string",
-                    "description": "Optional Fleet roster member to run this child as (e.g. reviewer, scout, builder, verifier, synthesizer, manager, or a custom member from .codewhale/agents/ or [fleet.profiles] config). The member supplies role posture, model routing, instruction overlay, and delegation bounds; explicit type/model/model_strength/max_depth here override the member's defaults. See /fleet."
+                    "description": "Optional Fleet roster member to run this child as (e.g. reviewer, scout, builder, verifier, synthesizer, manager, or a custom member from .codewhale/agents/ or [fleet.profiles] config). The member supplies role posture, model routing, reasoning tier, instruction overlay, and delegation bounds; explicit type/model/model_strength/thinking/max_depth here override the member's defaults. See /fleet."
                 },
                 "model_strength": {
                     "type": "string",
@@ -3777,7 +3786,7 @@ impl ToolSpec for AgentTool {
                 "thinking": {
                     "type": "string",
                     "enum": ["inherit", "auto", "off", "low", "medium", "high", "max"],
-                    "description": "Optional child thinking budget. inherit (default) follows the parent thinking mode. auto chooses from the child prompt. off is best for faster explore/lookups. high is for normal reasoning. max is for hard design/debug/release/security work. Explicit thinking overrides the default off used by model_strength=faster."
+                    "description": "Optional child thinking budget. When omitted, a selected profile's reasoning_effort applies; otherwise the child inherits the parent/session tier, except that an unconfigured faster lane defaults to off (or low where off is unavailable). Explicit inherit always follows the parent/session tier, including on faster lanes. auto chooses from the child prompt. Explicit thinking overrides both the profile tier and the faster-lane default."
                 },
                 "cwd": {
                     "type": "string",
@@ -4431,7 +4440,7 @@ async fn spawn_subagent_from_input(
         resolved_model: effective_model.clone(),
         route_source: model_selection.source.as_str().to_string(),
         resolved_role,
-        resolved_profile,
+        resolved_profile: resolved_profile.clone(),
         parent_task_id: child_runtime.parent_agent_id.clone(),
         depth: child_runtime.spawn_depth,
         workflow_run_id: None,
@@ -4452,6 +4461,7 @@ async fn spawn_subagent_from_input(
             spawn_request.allowed_tools,
             SubAgentSpawnOptions {
                 name: spawn_request.session_name.clone(),
+                profile: resolved_profile,
                 model: Some(effective_model),
                 model_route: Some(model_route),
                 nickname: None,
@@ -6428,7 +6438,7 @@ fn parse_spawn_request(input: &Value) -> Result<SpawnRequest, ToolError> {
     let thinking = optional_input_str(input, &["thinking", "reasoning_effort", "reasoningEffort"])
         .map(SubAgentThinking::parse)
         .transpose()?
-        .unwrap_or(SubAgentThinking::Inherit);
+        .unwrap_or(SubAgentThinking::Unspecified);
     let resident_file = input
         .get("resident_file")
         .and_then(|v| v.as_str())
@@ -6545,7 +6555,8 @@ fn validate_roster_token(value: &str, field: &str) -> Result<String, ToolError> 
 
 /// Resolve the `profile` spawn parameter against the fleet roster and fold
 /// the member into the request: agent type (when not explicitly given),
-/// assignment role, and the profile instruction overlay on the child prompt.
+/// assignment role, reasoning tier (when not explicitly given), and the
+/// profile instruction overlay on the child prompt.
 ///
 /// Runs at spawn time — `parse_spawn_request` has no runtime access. Returns
 /// the resolved member so the spawn path can apply its model routing and
@@ -6594,6 +6605,17 @@ fn apply_spawn_profile(
     } else {
         role_name.to_string()
     });
+
+    // Spawn-level thinking has the highest precedence, including an explicit
+    // `inherit`. Only a genuinely unspecified request may consume the saved
+    // profile tier; leaving both unset falls through to the session/default
+    // logic in `subagent_reasoning_effort_for_request`.
+    if request.thinking == SubAgentThinking::Unspecified
+        && let Some(reasoning_effort) =
+            crate::fleet::worker_runtime::effective_fleet_reasoning_effort(Some(member))
+    {
+        request.thinking = SubAgentThinking::parse(&reasoning_effort)?;
+    }
 
     if let Some(overlay) = spawn_profile_prompt_overlay(member) {
         request.prompt.push_str(&overlay);
@@ -7092,12 +7114,13 @@ fn subagent_reasoning_effort_for_request(
                 .as_setting()
                 .to_string(),
         ),
-        SubAgentThinking::Inherit if requested_fast_lane => {
+        SubAgentThinking::Unspecified if requested_fast_lane => {
             // Faster/explore lane: cheaper reasoning by default. The OpenAI Codex
             // (GPT-5.5) adapter has no true "off" on the wire (it collapses off
             // to low), so we resolve Low honestly for that provider instead of
             // emitting an off that is silently rewritten. Explicit thinking
-            // passed by the caller already won via the arms above.
+            // (including `inherit`) and profile thinking already won via the
+            // other arms.
             let provider = runtime.client.api_provider();
             let effort = if matches!(provider, crate::config::ApiProvider::OpenaiCodex) {
                 ReasoningEffort::Low
@@ -7106,7 +7129,9 @@ fn subagent_reasoning_effort_for_request(
             };
             Some(effort.as_setting().to_string())
         }
-        SubAgentThinking::Inherit => fallback_subagent_reasoning_effort(runtime, prompt),
+        SubAgentThinking::Unspecified | SubAgentThinking::Inherit => {
+            fallback_subagent_reasoning_effort(runtime, prompt)
+        }
     }
 }
 

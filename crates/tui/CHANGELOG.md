@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1337.6] - 2026-07-12
+
+### Added
+
+- Expose conservative per-thread context occupancy through
+  `GET /v1/threads/{id}/context` and durable `context.updated` runtime events.
+
+### Changed
+
+- Align context safety reservations with the 65,536-token request cap, clamp
+  output dynamically near the context boundary, and default auto-compaction to
+  90% of the active route's context window.
+
+## [0.1337.5] - 2026-07-12
+
+### Changed
+
+- Persist the canonical Fleet roster profile id on agent-run records so API
+  clients can distinguish a worker's named profile from its coarse agent type.
+
+## [0.1337.4] - 2026-07-12
+
+### Fixed
+
+- Apply saved Fleet-profile reasoning effort to interactive `agent(profile=...)`
+  spawns while preserving explicit `thinking` as the highest-precedence override.
+
+## [0.1337.1] - 2026-07-11
+
+### Changed
+
+- Identify the local HarambeChat runtime fork independently from upstream
+  CodeWhale releases.
+
 ## [0.8.68] - 2026-07-10
 
 ### Changed

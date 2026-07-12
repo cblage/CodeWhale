@@ -8,14 +8,14 @@ pub const LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
 pub const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
 /// Last-resort compaction trigger when [`context_window_for_model`] returns
 /// `None` (an unrecognised model id). v0.8.11 raised this from `50_000` to
-/// `102_400` (80% of [`LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS`]) so unknown
+/// `115_200` (90% of [`LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS`]) so unknown
 /// models inherit the same late-trigger discipline as V4 instead of paying
 /// the prefix-cache hit at 5% of the V4 window. Known DeepSeek / Claude
 /// models resolve to their own scaled value via
 /// [`compaction_threshold_for_model`] (#664).
-pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 102_400;
+pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 115_200;
 #[cfg(test)]
-const COMPACTION_THRESHOLD_PERCENT: u32 = 80;
+const COMPACTION_THRESHOLD_PERCENT: u32 = 90;
 pub const DEFAULT_AUTO_COMPACT_MAX_CONTEXT_WINDOW_TOKENS: u32 = DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS;
 
 // === Core Message Types ===
@@ -1012,23 +1012,23 @@ mod tests {
             compaction_threshold_for_model_at_percent("deepseek-v3.2-128k", 80.0),
             102_400
         );
-        // v0.8.11 (#664): unknown-model fallback also resolves to 80% of
+        // Unknown-model fallback resolves to 90% of
         // `LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS` (128K legacy DeepSeek
         // fallback) — same late-trigger discipline as the V4 path. Was
         // `50_000` pre-v0.8.11; that hardcoded value compacted at ~5% of a
         // 1M window when model detection silently fell through, which is
         // exactly the prefix-cache-burning behaviour we're getting away from.
         assert_eq!(
-            compaction_threshold_for_model_at_percent("unknown-model", 80.0),
-            102_400
+            compaction_threshold_for_model_at_percent("unknown-model", 90.0),
+            115_200
         );
     }
 
     #[test]
     fn compaction_scales_for_deepseek_v4_1m_context() {
         assert_eq!(
-            compaction_threshold_for_model_at_percent("deepseek-v4-pro", 80.0),
-            800_000
+            compaction_threshold_for_model_at_percent("deepseek-v4-pro", 90.0),
+            900_000
         );
     }
 

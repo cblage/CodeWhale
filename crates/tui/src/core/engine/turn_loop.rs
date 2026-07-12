@@ -5,6 +5,7 @@
 //! event handling, tool planning/execution, LSP post-edit hooks, capacity
 //! checkpoints, and loop termination.
 
+use super::context::max_output_tokens_for_route_at_input;
 use super::*;
 use crate::core::ops::UserInputProvenance;
 use crate::prompt_zones::PinnedPrefix;
@@ -250,6 +251,46 @@ impl Engine {
         count
     }
 
+    async fn apply_in_flight_turn_input(
+        &mut self,
+        mut input: InFlightTurnInput,
+        emit_steer_status: bool,
+    ) {
+        input.content = input.content.trim().to_string();
+        if input.content.is_empty() {
+            input.acknowledge_applied();
+            return;
+        }
+
+        if input.is_external_user() {
+            self.session
+                .working_set
+                .observe_user_message(&input.content, &self.session.workspace);
+        }
+        self.add_session_message(
+            self.user_text_message_with_turn_metadata_for_route_and_provenance(
+                input.content.clone(),
+                &self.session.model,
+                self.session.auto_model,
+                self.session.reasoning_effort.as_deref(),
+                self.session.reasoning_effort_auto,
+                input.provenance,
+            ),
+        )
+        .await;
+
+        if emit_steer_status && input.is_external_user() {
+            let _ = self
+                .tx_event
+                .send(Event::status(format!(
+                    "Steer input accepted: {}",
+                    summarize_text(&input.content, 120)
+                )))
+                .await;
+        }
+        input.acknowledge_applied();
+    }
+
     pub(super) async fn handle_deepseek_turn(
         &mut self,
         turn: &mut TurnContext,
@@ -307,23 +348,8 @@ impl Engine {
                 return (TurnOutcomeStatus::Interrupted, None);
             }
 
-            while let Ok(steer) = self.rx_steer.try_recv() {
-                let steer = steer.trim().to_string();
-                if steer.is_empty() {
-                    continue;
-                }
-                self.session
-                    .working_set
-                    .observe_user_message(&steer, &self.session.workspace);
-                self.add_session_message(self.user_text_message_with_turn_metadata(steer.clone()))
-                    .await;
-                let _ = self
-                    .tx_event
-                    .send(Event::status(format!(
-                        "Steer input accepted: {}",
-                        summarize_text(&steer, 120)
-                    )))
-                    .await;
+            while let Ok(input) = self.rx_steer.try_recv() {
+                self.apply_in_flight_turn_input(input, true).await;
             }
 
             // Child agents can finish while the parent model is still taking
@@ -429,18 +455,36 @@ impl Engine {
                 }
             }
 
-            if let Some(input_budget) = context_input_budget_for_route(
+            // #136: drain any LSP diagnostics collected since the last
+            // request and inject them as a synthetic user message so the
+            // model sees compile errors before its next reasoning step.
+            self.flush_pending_lsp_diagnostics().await;
+
+            // #159: layered context seam checkpoint. This is opt-in for
+            // v0.7.5 while #200 audits cache-hit behavior; when enabled it
+            // appends <archived_context> blocks rather than replacing history.
+            self.layered_context_checkpoint().await;
+
+            // Compute this only after every message-mutating preflight hook so
+            // the cap reflects the exact message payload we are about to send.
+            let estimated_input = self.estimated_input_tokens();
+            let request_max_tokens = match max_output_tokens_for_route_at_input(
                 self.api_provider,
                 &self.session.model,
                 self.active_route_limits,
-                0,
+                estimated_input,
             ) {
-                let estimated_input = self.estimated_input_tokens();
-                if estimated_input > input_budget {
+                Some(tokens) => tokens,
+                None => {
                     if context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
+                        let context_window = crate::route_budget::route_context_window_tokens(
+                            self.api_provider,
+                            &self.session.model,
+                            self.active_route_limits,
+                        );
                         let message = format!(
                             "Context remains above model limit after {MAX_CONTEXT_RECOVERY_ATTEMPTS} recovery attempts \
-                             (~{estimated_input} token estimate, ~{input_budget} budget). Please run /compact or /clear."
+                             (~{estimated_input} token estimate, {context_window} token window). Please run /compact or /clear."
                         );
                         turn_error = Some(message.clone());
                         let _ = self
@@ -457,18 +501,18 @@ impl Engine {
                         context_recovery_attempts = context_recovery_attempts.saturating_add(1);
                         continue;
                     }
+
+                    let message = format!(
+                        "Context has no remaining generation room (~{estimated_input} input tokens). Please run /compact or /clear."
+                    );
+                    turn_error = Some(message.clone());
+                    let _ = self
+                        .tx_event
+                        .send(Event::error(ErrorEnvelope::context_overflow(message)))
+                        .await;
+                    return (TurnOutcomeStatus::Failed, turn_error);
                 }
-            }
-
-            // #136: drain any LSP diagnostics collected since the last
-            // request and inject them as a synthetic user message so the
-            // model sees compile errors before its next reasoning step.
-            self.flush_pending_lsp_diagnostics().await;
-
-            // #159: layered context seam checkpoint. This is opt-in for
-            // v0.7.5 while #200 audits cache-hit behavior; when enabled it
-            // appends <archived_context> blocks rather than replacing history.
-            self.layered_context_checkpoint().await;
+            };
 
             // Build the request
             let force_update_plan_this_step = force_update_plan_first && !turn.has_tool_calls();
@@ -595,11 +639,7 @@ impl Engine {
             let request = MessageRequest {
                 model: self.session.model.clone(),
                 messages: self.messages_with_turn_metadata(),
-                max_tokens: effective_max_output_tokens_for_route(
-                    self.api_provider,
-                    &self.session.model,
-                    self.active_route_limits,
-                ),
+                max_tokens: request_max_tokens,
                 system: self.session.system_prompt.clone(),
                 tools: active_tools.clone(),
                 tool_choice: if active_tools.is_some() {
@@ -699,7 +739,7 @@ impl Engine {
             // content-block delta delivered to the consumer).
             let mut any_content_received = false;
             let mut transparent_stream_retries = 0u32;
-            let mut pending_steers: Vec<String> = Vec::new();
+            let mut pending_steers: Vec<InFlightTurnInput> = Vec::new();
             // `stream_start` is reset on a transparent retry so the wall-clock
             // budget restarts with the fresh stream.
             let mut stream_start = Instant::now();
@@ -738,19 +778,22 @@ impl Engine {
                 let Some(event_result) = poll_outcome else {
                     break;
                 };
-                while let Ok(steer) = self.rx_steer.try_recv() {
-                    let steer = steer.trim().to_string();
-                    if steer.is_empty() {
+                while let Ok(mut input) = self.rx_steer.try_recv() {
+                    input.content = input.content.trim().to_string();
+                    if input.content.is_empty() {
+                        input.acknowledge_applied();
                         continue;
                     }
-                    pending_steers.push(steer.clone());
-                    let _ = self
-                        .tx_event
-                        .send(Event::status(format!(
-                            "Steer input queued: {}",
-                            summarize_text(&steer, 120)
-                        )))
-                        .await;
+                    if input.is_external_user() {
+                        let _ = self
+                            .tx_event
+                            .send(Event::status(format!(
+                                "Steer input queued: {}",
+                                summarize_text(&input.content, 120)
+                            )))
+                            .await;
+                    }
+                    pending_steers.push(input);
                 }
 
                 if self.cancel_token.is_cancelled() {
@@ -1307,12 +1350,8 @@ impl Engine {
             // finish the turn.
             if tool_uses.is_empty() {
                 if !pending_steers.is_empty() {
-                    for steer in pending_steers.drain(..) {
-                        self.session
-                            .working_set
-                            .observe_user_message(&steer, &self.session.workspace);
-                        self.add_session_message(self.user_text_message_with_turn_metadata(steer))
-                            .await;
+                    for input in pending_steers.drain(..) {
+                        self.apply_in_flight_turn_input(input, false).await;
                     }
                     turn.next_step();
                     continue;
@@ -2609,12 +2648,8 @@ impl Engine {
             }
 
             if !pending_steers.is_empty() {
-                for steer in pending_steers.drain(..) {
-                    self.session
-                        .working_set
-                        .observe_user_message(&steer, &self.session.workspace);
-                    self.add_session_message(self.user_text_message_with_turn_metadata(steer))
-                        .await;
+                for input in pending_steers.drain(..) {
+                    self.apply_in_flight_turn_input(input, false).await;
                 }
             }
 

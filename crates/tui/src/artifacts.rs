@@ -219,14 +219,13 @@ pub fn render_transcript_artifact_ref(reference: &TranscriptArtifactRef) -> Stri
          tool:         {tool}\n\
          tool_call_id: {tool_call_id}\n\
          size:         {size}\n\
-         path:         {path}\n\
-         preview:      {preview}\n\
-         retrieve:     retrieve_tool_result ref={id}",
+         retrieve:     retrieve_tool_result ref={id}\n\
+         storage:      CodeWhale runtime artifact (not a workspace file; do not use read_file)\n\
+         preview:      {preview}",
         tool = reference.tool_name,
         id = reference.artifact_id,
         tool_call_id = reference.tool_call_id,
         size = format_byte_size(reference.byte_size),
-        path = format_artifact_relative_path(&reference.storage_path),
         preview = reference.preview.replace('\n', " "),
     )
 }
@@ -270,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn transcript_ref_renders_relative_paths_with_forward_slashes() {
+    fn transcript_ref_uses_retrieval_handle_without_a_workspace_like_path() {
         let reference = TranscriptArtifactRef {
             artifact_id: "art_call-big".to_string(),
             tool_name: "exec_shell".to_string(),
@@ -282,7 +281,8 @@ mod tests {
 
         let rendered = render_transcript_artifact_ref(&reference);
 
-        assert!(rendered.contains("path:         artifacts/art_call-big.txt"));
+        assert!(!rendered.contains("path:"));
+        assert!(rendered.contains("not a workspace file; do not use read_file"));
         assert!(
             rendered.contains("retrieve:     retrieve_tool_result ref=art_call-big"),
             "rendered block must embed the literal retrieve command: {rendered}"

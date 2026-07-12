@@ -440,6 +440,18 @@ pub(super) async fn save_current_session(
         }
     };
 
+    // The engine snapshot exposes the effective application mode.  Legacy
+    // `yolo` threads intentionally run as Agent + bypass authority, so
+    // `AppMode::as_setting()` reports `agent`.  The runtime thread record is
+    // the durable source for that user-selected compatibility profile; keep
+    // its label in session metadata so the GUI can display and resume the
+    // same authority profile instead of silently downgrading it to Agent.
+    let thread = state
+        .runtime_threads
+        .get_thread(&thread_id)
+        .await
+        .map_err(map_thread_err)?;
+
     // Get the engine handle (loads the thread into an engine if needed),
     // then request a session snapshot. This reuses the same code path as
     // TUI's `build_session_snapshot`: the engine holds the authoritative
@@ -454,6 +466,14 @@ pub(super) async fn save_current_session(
         .get_session_snapshot()
         .await
         .map_err(|e| ApiError::internal(format!("Failed to get session snapshot: {e}")))?;
+    let persisted_mode = if matches!(
+        crate::tui::app::AppMode::parse(&thread.mode),
+        Some(crate::tui::app::AppMode::Yolo)
+    ) {
+        "yolo".to_string()
+    } else {
+        snapshot.mode.clone()
+    };
 
     let manager = SessionManager::new(state.sessions_dir.clone())
         .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
@@ -473,7 +493,7 @@ pub(super) async fn save_current_session(
                 );
                 updated.metadata.model = snapshot.model.clone();
                 updated.metadata.model_provider = snapshot.model_provider.clone();
-                updated.metadata.mode = Some(snapshot.mode.clone());
+                updated.metadata.mode = Some(persisted_mode.clone());
                 updated
             }
             Err(e) => {
@@ -485,7 +505,7 @@ pub(super) async fn save_current_session(
                         &snapshot.workspace,
                         snapshot.total_tokens,
                         snapshot.system_prompt.as_ref(),
-                        Some(snapshot.mode.as_str()),
+                        Some(persisted_mode.as_str()),
                     );
                     session.metadata.model_provider = snapshot.model_provider.clone();
                     session
@@ -503,7 +523,7 @@ pub(super) async fn save_current_session(
             &snapshot.workspace,
             snapshot.total_tokens,
             snapshot.system_prompt.as_ref(),
-            Some(snapshot.mode.as_str()),
+            Some(persisted_mode.as_str()),
         );
         session.metadata.model_provider = snapshot.model_provider.clone();
         session

@@ -844,10 +844,11 @@ mod tests {
             assert!(result.content.starts_with("[artifact: exec_shell]"));
             assert!(result.content.contains("id:           art_call-big"));
             assert!(result.content.contains("tool_call_id: call-big"));
+            assert!(!result.content.contains("path:"));
             assert!(
                 result
                     .content
-                    .contains("path:         artifacts/art_call-big.txt")
+                    .contains("not a workspace file; do not use read_file")
             );
             assert!(!result.content.contains("Output truncated:"));
 

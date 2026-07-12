@@ -377,7 +377,7 @@ impl Default for Settings {
             // an explicit preference. This preserves an explicit opt-out while
             // making long-session continuity the default runtime behavior.
             auto_compact: false,
-            auto_compact_threshold_percent: 80.0,
+            auto_compact_threshold_percent: 90.0,
             // #4095: default presentation is compact/calm; verbose detail is opt-in.
             calm_mode: true,
             tool_collapse_mode: "compact".to_string(),
@@ -1629,7 +1629,7 @@ mod tests {
         // runtime default from the active model window unless the file contains
         // `auto_compact`.
         assert!(!settings.auto_compact);
-        assert_eq!(settings.auto_compact_threshold_percent, 80.0);
+        assert_eq!(settings.auto_compact_threshold_percent, 90.0);
     }
 
     #[test]
