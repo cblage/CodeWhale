@@ -2835,6 +2835,22 @@ async fn session_create_from_completed_thread_saves_messages() -> Result<()> {
     );
     assert_eq!(detail["messages"][1]["role"], "assistant");
 
+    let context: serde_json::Value = client
+        .get(format!(
+            "http://{addr}/v1/sessions/sess_endpoint_fetch/context"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(context["thread_id"], "sess_endpoint_fetch");
+    assert_eq!(context["provider"], "deepseek");
+    assert_eq!(context["model"], "deepseek-v4-pro");
+    assert_eq!(context["context_window_tokens"], 1_000_000);
+    assert!(context["estimated_input_tokens"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(context["source"], "saved_session");
+
     let manual_title: serde_json::Value = client
         .post(format!("http://{addr}/v1/sessions"))
         .json(&json!({
@@ -3659,6 +3675,29 @@ async fn runtime_info_reports_bind_state() -> Result<()> {
     assert!(info["experimental"].is_object());
     assert_eq!(info["experimental"]["agent_run_cancel"], true);
     assert_eq!(info["experimental"]["agent_run_nudge"], true);
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_models_reports_the_active_provider_catalog() -> Result<()> {
+    let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+        return Ok(());
+    };
+    let client = crate::tls::reqwest_client();
+    let response: serde_json::Value = client
+        .get(format!("http://{addr}/v1/models"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    assert!(response["provider"].is_string());
+    assert!(response["provider_display_name"].is_string());
+    assert!(response["models"].is_array());
+    assert!(!response["models"].as_array().unwrap().is_empty());
 
     handle.abort();
     Ok(())

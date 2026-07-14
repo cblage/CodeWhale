@@ -6,10 +6,11 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::models::{ContentBlock, Message};
+use crate::config::ApiProvider;
+use crate::models::{ContentBlock, Message, SystemPrompt};
 use crate::runtime_threads::{
-    CreateThreadRequest, RuntimeTurnStatus, ThreadDetail, ThreadListFilter, TurnItemKind,
-    TurnItemLifecycleStatus,
+    CreateThreadRequest, RuntimeTurnStatus, ThreadContextSnapshot, ThreadDetail, ThreadListFilter,
+    TurnItemKind, TurnItemLifecycleStatus,
 };
 use crate::session_manager::{
     SavedSession, SessionManager, SessionMetadata, create_saved_session_with_id_and_mode,
@@ -112,6 +113,39 @@ pub(super) async fn get_session(
         .load_session(&id)
         .map_err(|e| map_session_err(&id, e, "read"))?;
     Ok(Json(session_to_detail(session)))
+}
+
+pub(super) async fn get_session_context(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<ThreadContextSnapshot>, ApiError> {
+    let manager = SessionManager::new(state.sessions_dir.clone())
+        .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
+    let session = manager
+        .load_session(&id)
+        .map_err(|e| map_session_err(&id, e, "read"))?;
+    let provider = ApiProvider::parse(&session.metadata.model_provider).ok_or_else(|| {
+        ApiError::bad_request(format!(
+            "Session '{}' has unsupported provider '{}'",
+            id, session.metadata.model_provider
+        ))
+    })?;
+    let system_prompt = session
+        .system_prompt
+        .as_ref()
+        .map(|text| SystemPrompt::Text(text.clone()));
+    let snapshot = state
+        .runtime_threads
+        .context_snapshot_for_messages(
+            &id,
+            provider,
+            &session.metadata.model,
+            &session.messages,
+            system_prompt.as_ref(),
+            "saved_session",
+        )
+        .map_err(|e| ApiError::internal(format!("Failed to estimate session context: {e}")))?;
+    Ok(Json(snapshot))
 }
 
 pub(super) async fn resume_session_thread(

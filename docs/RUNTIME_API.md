@@ -283,6 +283,7 @@ fronting layer.
 **Sessions** (legacy session manager)
 - `GET /v1/sessions?limit=50&search=<substring>`
 - `GET /v1/sessions/{id}`
+- `GET /v1/sessions/{id}/context`
 - `DELETE /v1/sessions/{id}`
 - `POST /v1/sessions/{id}/resume-thread`
 
@@ -353,6 +354,12 @@ plus 1,024 safety tokens; near the route boundary, the request output cap is
 clamped to the generation room that remains. `used_percent` is clamped to
 0–100. The endpoint loads the thread engine if needed, then returns the latest
 cached engine snapshot when one is already available.
+
+`GET /v1/sessions/{id}/context` returns the same occupancy shape for a saved
+session without resuming it into a runtime thread. It estimates the next input
+from the persisted messages and system prompt, reports the session id in the
+legacy `thread_id` response field for shape compatibility, and sets `source`
+to `saved_session`.
 
 Thread forks are sibling runtime threads, not an in-place tree projection.
 `thread.forked` events include `source_thread_id`; internal backtrack-aware

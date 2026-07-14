@@ -46,6 +46,7 @@ use crate::fleet::manager::{
 use crate::mcp::McpPool;
 #[cfg(test)]
 pub(super) use crate::models::{ContentBlock, Message};
+use crate::provider_lake::all_catalog_models_for_provider;
 use crate::runtime_threads::{
     CompactThreadRequest, CreateThreadRequest, ExternalApprovalDecision, RuntimeThreadManager,
     RuntimeThreadManagerConfig, SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest,
@@ -76,8 +77,8 @@ mod workspace;
 use self::auth::{ResolvedRuntimeAuth, token_from_cookie_header};
 use self::auth::{require_runtime_token, resolve_runtime_auth, runtime_auth_status_lines};
 use self::sessions::{
-    create_session_from_thread, delete_session, get_session, list_sessions, resume_session_thread,
-    save_current_session,
+    create_session_from_thread, delete_session, get_session, get_session_context, list_sessions,
+    resume_session_thread, save_current_session,
 };
 #[cfg(test)]
 use self::sessions::{messages_from_thread_detail, session_to_detail};
@@ -330,6 +331,13 @@ struct RuntimeInfoResponse {
     version: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct RuntimeModelsResponse {
+    provider: String,
+    provider_display_name: String,
+    models: Vec<String>,
+}
+
 fn default_runtime_capabilities() -> RuntimeCapabilities {
     RuntimeCapabilities {
         threads: true,
@@ -538,6 +546,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
                 .put(save_current_session),
         )
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
+        .route("/v1/sessions/{id}/context", get(get_session_context))
         .route(
             "/v1/sessions/{id}/resume-thread",
             post(resume_session_thread),
@@ -621,6 +630,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/automations/{id}/resume", post(resume_automation))
         .route("/v1/automations/{id}/runs", get(list_automation_runs))
         .route("/v1/usage", get(get_usage))
+        .route("/v1/models", get(list_runtime_models))
         .route("/v1/snapshots", get(list_snapshots))
         .route("/v1/snapshots/{id}/restore", post(restore_snapshot))
         .route("/v1/config", get(get_config).post(set_config))
@@ -1482,6 +1492,15 @@ async fn runtime_info(State(state): State<RuntimeApiState>) -> Json<RuntimeInfoR
             ..RuntimeExperimentalCapabilities::default()
         },
         version,
+    })
+}
+
+async fn list_runtime_models(State(state): State<RuntimeApiState>) -> Json<RuntimeModelsResponse> {
+    let provider = state.config.read().api_provider();
+    Json(RuntimeModelsResponse {
+        provider: provider.as_str().to_string(),
+        provider_display_name: provider.display_name().to_string(),
+        models: all_catalog_models_for_provider(provider),
     })
 }
 
