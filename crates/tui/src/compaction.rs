@@ -264,7 +264,9 @@ fn message_text(msg: &Message) -> String {
     for block in &msg.content {
         match block {
             ContentBlock::Text { text: t, .. } => {
-                let _ = writeln!(text, "{t}");
+                if let Some(visible) = visible_text_after_turn_metadata(t) {
+                    let _ = writeln!(text, "{visible}");
+                }
             }
             ContentBlock::Thinking { .. } => {}
             ContentBlock::ToolUse { name, input, .. } => {
@@ -282,19 +284,95 @@ fn message_text(msg: &Message) -> String {
     text
 }
 
+fn visible_text_after_turn_metadata(text: &str) -> Option<&str> {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with("<turn_meta>") {
+        return Some(text);
+    }
+
+    let (_, suffix) = trimmed.split_once("</turn_meta>")?;
+    let visible = suffix.trim_start();
+    (!visible.trim().is_empty()).then_some(visible)
+}
+
+fn is_internal_runtime_event_text(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with("<codewhale:runtime_event ")
+        && trimmed
+            .split_once('>')
+            .is_some_and(|(tag, _)| tag.contains("visibility=\"internal\""))
+}
+
+fn is_discardable_runtime_event_text(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed
+        .starts_with("<codewhale:runtime_event kind=\"subagent_watchdog\" visibility=\"internal\">")
+        || trimmed.starts_with(
+            "<codewhale:runtime_event kind=\"waiting_for_subagents\" visibility=\"internal\">",
+        )
+}
+
+fn is_compaction_noise_message(msg: &Message) -> bool {
+    if msg.role != "user" {
+        return false;
+    }
+
+    let mut saw_noise = false;
+    for block in &msg.content {
+        match block {
+            ContentBlock::Text { text, .. } => {
+                let Some(visible) = visible_text_after_turn_metadata(text) else {
+                    continue;
+                };
+                if is_discardable_runtime_event_text(visible) {
+                    saw_noise = true;
+                } else {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    saw_noise
+}
+
+fn strip_compaction_metadata(mut message: Message) -> Message {
+    message.content = message
+        .content
+        .into_iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text {
+                text,
+                cache_control,
+            } => visible_text_after_turn_metadata(&text).map(|visible| ContentBlock::Text {
+                text: visible.to_string(),
+                cache_control,
+            }),
+            other => Some(other),
+        })
+        .collect();
+    message
+}
+
 fn is_user_text_query(msg: &Message) -> bool {
     msg.role == "user"
-        && msg
-            .content
-            .iter()
-            .any(|block| matches!(block, ContentBlock::Text { .. }))
+        && msg.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Text { text, .. }
+                    if visible_text_after_turn_metadata(text)
+                        .is_some_and(|visible| !is_internal_runtime_event_text(visible))
+            )
+        })
 }
 
 fn extract_paths_from_message(message: &Message, workspace: Option<&Path>) -> Vec<String> {
     let mut paths = Vec::new();
     for block in &message.content {
         let candidates = match block {
-            ContentBlock::Text { text, .. } => extract_paths_from_text(text, workspace),
+            ContentBlock::Text { text, .. } => visible_text_after_turn_metadata(text)
+                .map(|visible| extract_paths_from_text(visible, workspace))
+                .unwrap_or_default(),
             ContentBlock::ToolResult { content, .. } => extract_paths_from_text(content, workspace),
             ContentBlock::ToolUse { input, .. } => extract_paths_from_tool_input(input, workspace),
             ContentBlock::Thinking { .. } => Vec::new(),
@@ -399,7 +477,8 @@ pub fn plan_compaction(
 
     // Always pin the tail of the conversation to preserve immediate context.
     let recent_start = len.saturating_sub(keep_recent);
-    pinned_indices.extend(recent_start..len);
+    pinned_indices
+        .extend((recent_start..len).filter(|idx| !is_compaction_noise_message(&messages[*idx])));
 
     // Derive a repo-aware working set from recent messages/tool calls and
     // merge it with any externally provided working-set paths.
@@ -414,7 +493,7 @@ pub fn plan_compaction(
     }
 
     for (idx, msg) in messages.iter().enumerate() {
-        if pinned_indices.contains(&idx) {
+        if pinned_indices.contains(&idx) || is_compaction_noise_message(msg) {
             continue;
         }
         let text = message_text(msg);
@@ -426,7 +505,11 @@ pub fn plan_compaction(
     // External pins are authoritative and should be preserved even if they
     // were not detected by the heuristics above.
     if let Some(pins) = external_pins {
-        pinned_indices.extend(pins.iter().copied().filter(|idx| *idx < len));
+        pinned_indices.extend(
+            pins.iter()
+                .copied()
+                .filter(|idx| *idx < len && !is_compaction_noise_message(&messages[*idx])),
+        );
     }
 
     // Ensure tool result messages are not kept without their corresponding tool call.
@@ -684,6 +767,47 @@ pub fn should_compact(
         return false;
     }
     token_estimate > effective_token_threshold
+}
+
+/// Whether the next full provider request has reached the automatic
+/// compaction threshold.
+///
+/// The primary trigger deliberately uses the same conservative estimate as
+/// context telemetry: transcript messages, the live system prompt, and request
+/// framing. It fires only when enough history can actually be summarized, so a
+/// large system prompt cannot cause a no-op compaction loop. The existing
+/// plan-aware trigger remains as a fallback so pinned messages can still lower
+/// the effective compactable-history threshold.
+pub fn should_compact_request(
+    messages: &[Message],
+    system: Option<&SystemPrompt>,
+    config: &CompactionConfig,
+    workspace: Option<&Path>,
+    external_pins: Option<&[usize]>,
+    external_working_set_paths: Option<&[String]>,
+) -> bool {
+    if !config.enabled {
+        return false;
+    }
+
+    let plan = plan_compaction(
+        messages,
+        workspace,
+        KEEP_RECENT_MESSAGES,
+        external_pins,
+        external_working_set_paths,
+    );
+    let request_threshold_reached = plan.summarize_indices.len() >= MIN_SUMMARIZE_MESSAGES
+        && estimate_input_tokens_conservative(messages, system) >= config.token_threshold;
+
+    request_threshold_reached
+        || should_compact(
+            messages,
+            config,
+            workspace,
+            external_pins,
+            external_working_set_paths,
+        )
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> &str {
@@ -1131,17 +1255,26 @@ pub async fn compact_messages(
     let to_summarize: Vec<Message> = plan
         .summarize_indices
         .iter()
-        .map(|&idx| messages[idx].clone())
+        .filter_map(|&idx| {
+            (!is_compaction_noise_message(&messages[idx]))
+                .then(|| strip_compaction_metadata(messages[idx].clone()))
+        })
+        .filter(|message| !message.content.is_empty())
         .collect();
 
     // Create a summary of the unpinned portion of the conversation
-    let summary = create_summary(
-        client,
-        &to_summarize,
-        &config.model,
-        config.effective_context_window,
-    )
-    .await?;
+    let summary = if to_summarize.is_empty() {
+        "Redundant internal runtime coordination events were discarded; no durable user conversation was omitted."
+            .to_string()
+    } else {
+        create_summary(
+            client,
+            &to_summarize,
+            &config.model,
+            config.effective_context_window,
+        )
+        .await?
+    };
 
     // Extract workflow context (files touched, tasks in progress, etc.)
     let workflow_context = extract_workflow_context(&to_summarize, workspace);
@@ -1179,7 +1312,11 @@ pub async fn compact_messages(
     let pinned_messages = messages
         .iter()
         .enumerate()
-        .filter_map(|(idx, msg)| plan.pinned_indices.contains(&idx).then_some(msg.clone()))
+        .filter_map(|(idx, msg)| {
+            (plan.pinned_indices.contains(&idx) && !is_compaction_noise_message(msg))
+                .then(|| strip_compaction_metadata(msg.clone()))
+        })
+        .filter(|message| !message.content.is_empty())
         .collect();
 
     Ok((
@@ -1427,8 +1564,10 @@ fn build_formatted_summary_request(
         for block in &msg.content {
             match block {
                 ContentBlock::Text { text, .. } => {
-                    let snippet = truncate_chars(text, limits.text_snippet_chars);
-                    let _ = write!(conversation_text, "{role}: {snippet}\n\n");
+                    if let Some(visible) = visible_text_after_turn_metadata(text) {
+                        let snippet = truncate_chars(visible, limits.text_snippet_chars);
+                        let _ = write!(conversation_text, "{role}: {snippet}\n\n");
+                    }
                 }
                 ContentBlock::ToolUse { name, .. } => {
                     let _ = write!(conversation_text, "{role}: [Used tool: {name}]\n\n");
@@ -1505,14 +1644,18 @@ fn extract_workflow_context(messages: &[Message], workspace: Option<&Path>) -> S
                         files_touched.push(path);
                     }
                 }
-                ContentBlock::Text { text, .. }
-                    // Look for task/todo mentions
-                    if (text.contains("TODO") || text.contains("task") || text.contains("need to")) => {
-                        let task = truncate_chars(text, 200).to_string();
+                ContentBlock::Text { text, .. } => {
+                    if let Some(visible) = visible_text_after_turn_metadata(text)
+                        && (visible.contains("TODO")
+                            || visible.contains("task")
+                            || visible.contains("need to"))
+                    {
+                        let task = truncate_chars(visible, 200).to_string();
                         if !tasks_identified.contains(&task) {
                             tasks_identified.push(task);
                         }
                     }
+                }
                 _ => {}
             }
         }
@@ -2111,6 +2254,77 @@ mod tests {
         assert!(!should_compact(&messages, &config, None, None, None));
     }
 
+    #[test]
+    fn request_compaction_uses_full_request_estimate() {
+        let config = CompactionConfig {
+            enabled: true,
+            token_threshold: 1_000,
+            ..Default::default()
+        };
+        let messages: Vec<Message> = (0..10).map(|_| msg("user", "short")).collect();
+        let system = SystemPrompt::Text("s".repeat(3_000));
+
+        assert!(!should_compact(&messages, &config, None, None, None));
+        assert!(
+            estimate_input_tokens_conservative(&messages, Some(&system)) >= config.token_threshold
+        );
+        assert!(should_compact_request(
+            &messages,
+            Some(&system),
+            &config,
+            None,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn request_compaction_respects_disabled_config() {
+        let config = CompactionConfig {
+            enabled: false,
+            token_threshold: 100,
+            ..Default::default()
+        };
+        let messages: Vec<Message> = (0..10).map(|_| msg("user", "short")).collect();
+        let system = SystemPrompt::Text("s".repeat(3_000));
+
+        assert!(
+            estimate_input_tokens_conservative(&messages, Some(&system)) >= config.token_threshold
+        );
+        assert!(!should_compact_request(
+            &messages,
+            Some(&system),
+            &config,
+            None,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn request_compaction_skips_system_only_pressure_without_compactable_history() {
+        let config = CompactionConfig {
+            enabled: true,
+            token_threshold: 100,
+            ..Default::default()
+        };
+        let messages = Vec::new();
+        let system = SystemPrompt::Text("s".repeat(3_000));
+
+        assert!(
+            estimate_input_tokens_conservative(&messages, Some(&system)) >= config.token_threshold
+        );
+        assert!(!should_compact(&messages, &config, None, None, None));
+        assert!(!should_compact_request(
+            &messages,
+            Some(&system),
+            &config,
+            None,
+            None,
+            None,
+        ));
+    }
+
     /// v0.8.11: message-count is no longer a compaction trigger. Long
     /// chats of small messages stay uncompacted because rewriting the V4
     /// prefix cache for a tiny budget reclaim is net-negative. Only token
@@ -2181,6 +2395,106 @@ mod tests {
 
         assert!(plan.pinned_indices.contains(&1));
         assert!(!plan.summarize_indices.contains(&1));
+    }
+
+    #[test]
+    fn synthetic_turn_metadata_does_not_pin_historical_messages() {
+        let messages: Vec<Message> = (0..10)
+            .map(|idx| Message {
+                role: "user".to_string(),
+                content: vec![
+                    ContentBlock::Text {
+                        text: format!("ordinary historical turn {idx}"),
+                        cache_control: None,
+                    },
+                    ContentBlock::Text {
+                        text: "<turn_meta>\nRepo Working Set: src/lib.rs\nTool policy: apply_patch\n</turn_meta>"
+                            .to_string(),
+                        cache_control: None,
+                    },
+                ],
+            })
+            .collect();
+        let working_paths = vec!["src/lib.rs".to_string()];
+
+        let plan = plan_compaction(
+            &messages,
+            None,
+            KEEP_RECENT_MESSAGES,
+            None,
+            Some(&working_paths),
+        );
+
+        for idx in 0..6 {
+            assert!(
+                plan.summarize_indices.contains(&idx),
+                "synthetic turn metadata pinned historical message {idx}"
+            );
+        }
+        assert_eq!(plan.pinned_indices, BTreeSet::from([6, 7, 8, 9]));
+    }
+
+    #[test]
+    fn legacy_combined_turn_metadata_preserves_real_user_suffix() {
+        let original = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "<turn_meta>\nRepo Working Set: src/lib.rs\nTool policy: apply_patch\n</turn_meta>\n/engineering-review #159"
+                    .to_string(),
+                cache_control: None,
+            }],
+        };
+
+        assert!(is_user_text_query(&original));
+        assert_eq!(message_text(&original).trim(), "/engineering-review #159");
+        assert!(extract_paths_from_message(&original, None).is_empty());
+
+        let stripped = strip_compaction_metadata(original);
+        assert_eq!(
+            stripped.content,
+            vec![ContentBlock::Text {
+                text: "/engineering-review #159".to_string(),
+                cache_control: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn watchdog_runtime_events_are_never_pinned_as_conversation_context() {
+        let turn_meta = ContentBlock::Text {
+            text:
+                "<turn_meta>\nRepo Working Set: src/lib.rs\nTool policy: apply_patch\n</turn_meta>"
+                    .to_string(),
+            cache_control: None,
+        };
+        let mut messages = vec![msg("user", "Keep this real user request")];
+        for _ in 0..8 {
+            messages.push(Message {
+                role: "user".to_string(),
+                content: vec![
+                    ContentBlock::Text {
+                        text: "<codewhale:runtime_event kind=\"subagent_watchdog\" visibility=\"internal\">\ncheck worker\n</codewhale:runtime_event>"
+                            .to_string(),
+                        cache_control: None,
+                    },
+                    turn_meta.clone(),
+                ],
+            });
+        }
+        let external_pins: Vec<usize> = (1..messages.len()).collect();
+
+        let plan = plan_compaction(
+            &messages,
+            None,
+            KEEP_RECENT_MESSAGES,
+            Some(&external_pins),
+            None,
+        );
+
+        assert_eq!(plan.pinned_indices, BTreeSet::from([0]));
+        for idx in 1..messages.len() {
+            assert!(plan.summarize_indices.contains(&idx));
+        }
     }
 
     #[test]

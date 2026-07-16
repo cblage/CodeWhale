@@ -1423,9 +1423,11 @@ fn message_mentions_any_path(message: &Message, needles: &[String], max_scan_cha
     for block in &message.content {
         match block {
             ContentBlock::Text { text, .. } => {
-                let snippet = truncate_chars(text, max_scan_chars);
-                if contains_any(snippet, needles) {
-                    return true;
+                if let Some(visible) = visible_text_after_turn_metadata(text) {
+                    let snippet = truncate_chars(visible, max_scan_chars);
+                    if contains_any(snippet, needles) {
+                        return true;
+                    }
                 }
             }
             ContentBlock::ToolUse { input, .. } => {
@@ -1449,6 +1451,17 @@ fn message_mentions_any_path(message: &Message, needles: &[String], max_scan_cha
         }
     }
     false
+}
+
+fn visible_text_after_turn_metadata(text: &str) -> Option<&str> {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with("<turn_meta>") {
+        return Some(text);
+    }
+
+    let (_, suffix) = trimmed.split_once("</turn_meta>")?;
+    let visible = suffix.trim_start();
+    (!visible.trim().is_empty()).then_some(visible)
 }
 
 fn contains_any(text: &str, needles: &[String]) -> bool {
@@ -1598,6 +1611,54 @@ mod tests {
 
         let pinned = ws.pinned_message_indices(&messages, tmp.path());
         assert_eq!(pinned, vec![1]);
+    }
+
+    #[test]
+    fn pinned_message_indices_ignore_synthetic_turn_metadata() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("main.rs"), "fn main() {}").expect("write");
+
+        let mut ws = WorkingSet::default();
+        ws.observe_user_message("Edit src/main.rs", tmp.path());
+        let messages = vec![Message {
+            role: "user".to_string(),
+            content: vec![
+                ContentBlock::Text {
+                    text: "Unrelated historical request".to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: "<turn_meta>\nRepo Working Set: src/main.rs\n</turn_meta>".to_string(),
+                    cache_control: None,
+                },
+            ],
+        }];
+
+        assert!(ws.pinned_message_indices(&messages, tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn pinned_message_indices_keep_path_in_legacy_user_suffix() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("main.rs"), "fn main() {}").expect("write");
+
+        let mut ws = WorkingSet::default();
+        ws.observe_user_message("Edit src/main.rs", tmp.path());
+        let messages = vec![Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text:
+                    "<turn_meta>\nTool policy: apply_patch\n</turn_meta>\nPlease edit src/main.rs"
+                        .to_string(),
+                cache_control: None,
+            }],
+        }];
+
+        assert_eq!(ws.pinned_message_indices(&messages, tmp.path()), vec![0]);
     }
 
     #[test]

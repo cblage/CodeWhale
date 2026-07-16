@@ -6245,6 +6245,113 @@ fn sync_runtime_system_prompt_override(engine: &mut Engine, system_prompt: Syste
 }
 
 #[test]
+fn persisted_host_prompt_restores_only_delimited_compaction_summary() {
+    let summary = "## 📋 Conversation Summary (Auto-Generated)\n\nKeep the durable result.";
+    let host_prompt = format!(
+        "BASE SYSTEM PROMPT\n\n<!-- compaction-summary:begin -->\n{summary}\n<!-- compaction-summary:end -->"
+    );
+
+    let restored = extract_compaction_summary_prompt(Some(SystemPrompt::Text(host_prompt)));
+
+    assert_eq!(restored, Some(SystemPrompt::Text(summary.to_string())));
+}
+
+#[test]
+fn legacy_flattened_host_prompt_restores_all_summaries_without_base() {
+    let summary_one = "## 📋 Conversation Summary (Auto-Generated)\n\nFirst durable result.";
+    let summary_two = "## 📋 Conversation Summary (Auto-Generated)\n\nSecond durable result.";
+    let host_prompt = format!("BASE SYSTEM PROMPT\n\n{summary_one}\n\n{summary_two}");
+
+    let restored = extract_compaction_summary_prompt(Some(SystemPrompt::Text(host_prompt)));
+    let Some(SystemPrompt::Text(restored)) = restored else {
+        panic!("expected normalized text summary");
+    };
+
+    assert!(!restored.contains("BASE SYSTEM PROMPT"));
+    assert!(restored.contains("First durable result."));
+    assert!(restored.contains("Second durable result."));
+    assert_eq!(restored.matches(COMPACTION_SUMMARY_MARKER).count(), 2);
+}
+
+#[test]
+fn nested_persisted_summary_sections_restore_outermost_summary_payload() {
+    let host_prompt = format!(
+        "BASE\n\n<!-- compaction-summary:begin -->\nDUPLICATED BASE\n\n<!-- compaction-summary:begin -->\n## 📋 {COMPACTION_SUMMARY_MARKER}\n\nFirst.\n<!-- compaction-summary:end -->\n\n## 📋 {COMPACTION_SUMMARY_MARKER}\n\nSecond.\n<!-- compaction-summary:end -->\n\nTAIL"
+    );
+
+    let restored = extract_compaction_summary_prompt(Some(SystemPrompt::Text(host_prompt)));
+    let Some(SystemPrompt::Text(restored)) = restored else {
+        panic!("expected normalized text summary");
+    };
+
+    assert!(!restored.contains("BASE"));
+    assert!(!restored.contains("compaction-summary:"));
+    assert!(!restored.contains("TAIL"));
+    assert!(restored.contains("First."));
+    assert!(restored.contains("Second."));
+}
+
+#[test]
+fn sync_normalizes_legacy_flattened_prompt_immediately() {
+    let summary_one = "## 📋 Conversation Summary (Auto-Generated)\n\nFirst.";
+    let summary_two = "## 📋 Conversation Summary (Auto-Generated)\n\nSecond.";
+    let legacy = SystemPrompt::Text(format!("BASE\n\n{summary_one}\n\n{summary_two}"));
+
+    let (normalized, summary) = normalize_compaction_system_prompt(Some(legacy));
+    let rendered = match normalized.expect("normalized prompt") {
+        SystemPrompt::Text(text) => text,
+        SystemPrompt::Blocks(blocks) => blocks
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    };
+    let summary = match summary.expect("summary") {
+        SystemPrompt::Text(text) => text,
+        SystemPrompt::Blocks(blocks) => blocks
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    };
+
+    assert_eq!(rendered.matches("BASE").count(), 1);
+    assert_eq!(rendered.matches(COMPACTION_SUMMARY_MARKER).count(), 2);
+    assert!(!summary.contains("BASE"));
+    assert_eq!(summary.matches(COMPACTION_SUMMARY_MARKER).count(), 2);
+}
+
+#[test]
+fn flattened_prompt_normalization_is_idempotent() {
+    let summary = "## 📋 Conversation Summary (Auto-Generated)\n\nDurable result.";
+    let flattened = SystemPrompt::Text(format!("BASE\n\n---\n\n{summary}"));
+
+    let (first, _) = normalize_compaction_system_prompt(Some(flattened));
+    let flatten = |prompt: SystemPrompt| match prompt {
+        SystemPrompt::Text(text) => text,
+        SystemPrompt::Blocks(blocks) => blocks
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n"),
+    };
+    let first = flatten(first.expect("first normalized prompt"));
+    let (second, _) = normalize_compaction_system_prompt(Some(SystemPrompt::Text(first.clone())));
+    let second = flatten(second.expect("second normalized prompt"));
+
+    assert_eq!(second, first);
+    assert_eq!(second.matches("\n\n---\n\n").count(), 1);
+    assert_eq!(second.matches(COMPACTION_SUMMARY_MARKER).count(), 1);
+}
+
+#[test]
+fn compaction_accepts_intentional_empty_message_output_with_summary() {
+    assert!(compaction_output_is_valid(true, true, false));
+    assert!(!compaction_output_is_valid(true, false, false));
+    assert!(compaction_output_is_valid(false, false, false));
+}
+
+#[test]
 fn text_system_prompt_override_via_runtime_sync_survives_refresh() {
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {

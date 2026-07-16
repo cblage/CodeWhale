@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::DeepSeekClient;
 use crate::compaction::{
-    CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
+    CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact_request,
 };
 use crate::config::{ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MODEL};
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, StreamError};
@@ -1882,8 +1882,9 @@ impl Engine {
                             self.session.id = uuid::Uuid::new_v4().to_string();
                         }
                         self.session.messages = messages.into();
-                        self.session.compaction_summary_prompt =
-                            extract_compaction_summary_prompt(system_prompt.clone());
+                        let (system_prompt, compaction_summary_prompt) =
+                            normalize_compaction_system_prompt(system_prompt);
+                        self.session.compaction_summary_prompt = compaction_summary_prompt;
                         self.session.system_prompt = system_prompt;
                         self.session.last_system_prompt_hash =
                             Some(system_prompt_hash(self.session.system_prompt.as_ref()));
@@ -3066,7 +3067,11 @@ impl Engine {
         .await
         {
             Ok(result) => {
-                if !result.messages.is_empty() || self.session.messages.is_empty() {
+                if compaction_output_is_valid(
+                    result.messages.is_empty(),
+                    result.summary_prompt.is_some(),
+                    self.session.messages.is_empty(),
+                ) {
                     let messages_after = result.messages.len();
                     self.session.replace_messages(result.messages);
                     self.merge_compaction_summary(result.summary_prompt);
@@ -3294,7 +3299,11 @@ impl Engine {
             }
         }
 
-        if !compacted_messages.is_empty() || self.session.messages.is_empty() {
+        if compaction_output_is_valid(
+            compacted_messages.is_empty(),
+            summary_prompt.is_some(),
+            self.session.messages.is_empty(),
+        ) {
             self.session.replace_messages(compacted_messages);
         }
         self.merge_compaction_summary(summary_prompt);
@@ -3697,6 +3706,14 @@ impl Engine {
         self.session.last_system_prompt_hash = Some(system_prompt_hash(merged.as_ref()));
         self.session.system_prompt = merged;
     }
+}
+
+fn compaction_output_is_valid(
+    output_messages_empty: bool,
+    summary_present: bool,
+    input_messages_empty: bool,
+) -> bool {
+    !output_messages_empty || summary_present || input_messages_empty
 }
 
 fn default_plugin_tools_dir() -> PathBuf {
@@ -4127,11 +4144,14 @@ use context::route_context_budget_for_provider;
 use context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
     effective_max_output_tokens_for_route, estimate_input_tokens_conservative,
-    extract_compaction_summary_prompt, is_context_length_error_message,
+    is_context_length_error_message, normalize_compaction_system_prompt,
     route_context_budget_for_route, summarize_text,
 };
 #[cfg(test)]
-use context::{context_input_budget_for_provider, effective_max_output_tokens};
+use context::{
+    context_input_budget_for_provider, effective_max_output_tokens,
+    extract_compaction_summary_prompt,
+};
 mod dispatch;
 mod lsp_hooks;
 mod streaming;

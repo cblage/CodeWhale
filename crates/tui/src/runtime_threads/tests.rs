@@ -3606,6 +3606,39 @@ fn summary_merge_replaces_existing_section_idempotently() {
 }
 
 #[test]
+fn summary_merge_migrates_legacy_flattened_prompt_without_duplication() {
+    let heading = "## 📋 Conversation Summary (Auto-Generated)";
+    let legacy = format!("Base prompt.\n\n{heading}\nold one\n\n{heading}\nold two");
+    let replacement = format!("{heading}\nnew canonical summary");
+
+    let merged = merge_summary_into_prompt(Some(&legacy), &replacement);
+
+    assert!(merged.starts_with("Base prompt."));
+    assert!(!merged.contains("old one"));
+    assert!(!merged.contains("old two"));
+    assert_eq!(merged.matches(COMPACTION_SUMMARY_BEGIN).count(), 1);
+    assert_eq!(merged.matches(COMPACTION_SUMMARY_END).count(), 1);
+    assert_eq!(merged.matches(heading).count(), 1);
+}
+
+#[test]
+fn summary_merge_repairs_nested_sentinel_sections() {
+    let nested = format!(
+        "Base.\n\n{COMPACTION_SUMMARY_BEGIN}\nDuplicated base.\n{COMPACTION_SUMMARY_BEGIN}\nold one\n{COMPACTION_SUMMARY_END}\nold two\n{COMPACTION_SUMMARY_END}\n\nTrailing rules."
+    );
+
+    let merged = merge_summary_into_prompt(Some(&nested), "new summary");
+
+    assert!(merged.contains("Base."));
+    assert!(merged.contains("Trailing rules."));
+    assert!(!merged.contains("Duplicated base."));
+    assert!(!merged.contains("old one"));
+    assert!(!merged.contains("old two"));
+    assert_eq!(merged.matches(COMPACTION_SUMMARY_BEGIN).count(), 1);
+    assert_eq!(merged.matches(COMPACTION_SUMMARY_END).count(), 1);
+}
+
+#[test]
 fn summary_merge_handles_missing_base() {
     let merged = merge_summary_into_prompt(None, "only summary");
     assert!(merged.starts_with(COMPACTION_SUMMARY_BEGIN));

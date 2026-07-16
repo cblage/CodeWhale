@@ -4,7 +4,7 @@
 //! engine session maintenance code. Keeping them here prevents the top-level
 //! engine module from accumulating unrelated context-policy details.
 
-use crate::compaction::estimate_tokens;
+use crate::compaction::{estimate_tokens, merge_system_prompts};
 use crate::config::ApiProvider;
 use crate::context_budget::ContextBudget;
 use crate::error_taxonomy::ErrorCategory;
@@ -120,6 +120,7 @@ const LARGE_CONTEXT_WINDOW_TOKENS: u32 = 500_000;
 const TOOL_RESULT_METADATA_SUMMARY_CHARS: usize = 320;
 
 pub(super) const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
+const COMPACTION_SUMMARY_HEADING: &str = "## 📋 Conversation Summary (Auto-Generated)";
 
 #[derive(Debug, Clone, Copy)]
 struct ToolResultContextLimits {
@@ -550,7 +551,12 @@ pub(super) fn extract_compaction_summary_prompt(
         Some(SystemPrompt::Blocks(blocks)) => {
             let summary_blocks: Vec<_> = blocks
                 .into_iter()
-                .filter(|block| block.text.contains(COMPACTION_SUMMARY_MARKER))
+                .filter_map(|mut block| {
+                    extract_compaction_summary_text(&block.text).map(|summary| {
+                        block.text = summary;
+                        block
+                    })
+                })
                 .collect();
             if summary_blocks.is_empty() {
                 None
@@ -559,14 +565,106 @@ pub(super) fn extract_compaction_summary_prompt(
             }
         }
         Some(SystemPrompt::Text(text)) => {
-            if text.contains(COMPACTION_SUMMARY_MARKER) {
-                Some(SystemPrompt::Text(text))
-            } else {
-                None
-            }
+            extract_compaction_summary_text(&text).map(SystemPrompt::Text)
         }
         None => None,
     }
+}
+
+pub(super) fn normalize_compaction_system_prompt(
+    prompt: Option<SystemPrompt>,
+) -> (Option<SystemPrompt>, Option<SystemPrompt>) {
+    let summary = extract_compaction_summary_prompt(prompt.clone());
+    let normalized = match (prompt, summary.as_ref()) {
+        (Some(SystemPrompt::Text(text)), Some(_)) => {
+            let base = strip_compaction_summary_text(&text);
+            let base_prompt = (!base.is_empty()).then(|| SystemPrompt::Text(base));
+            merge_system_prompts(base_prompt.as_ref(), summary.clone())
+        }
+        (other, _) => other,
+    };
+    (normalized, summary)
+}
+
+fn extract_compaction_summary_text(text: &str) -> Option<String> {
+    const SUMMARY_BEGIN: &str = "<!-- compaction-summary:begin -->";
+    const SUMMARY_END: &str = "<!-- compaction-summary:end -->";
+
+    // Canonical persisted prompts wrap every accumulated summary block in one
+    // section. Use the outermost bounds so older nested/corrupt pairs are
+    // normalized in one pass. Legacy saved sessions have no sentinels, in
+    // which case the summaries are the appended suffix after the base prompt.
+    let candidate = match (text.find(SUMMARY_BEGIN), text.rfind(SUMMARY_END)) {
+        (Some(start), Some(end)) if end >= start + SUMMARY_BEGIN.len() => {
+            &text[start + SUMMARY_BEGIN.len()..end]
+        }
+        (Some(start), _) => &text[start + SUMMARY_BEGIN.len()..],
+        _ => text,
+    };
+
+    let start = marker_line_start(candidate, COMPACTION_SUMMARY_HEADING)
+        .or_else(|| marker_line_start(candidate, COMPACTION_SUMMARY_MARKER))?;
+    let normalized = candidate[start..]
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            trimmed != SUMMARY_BEGIN && trimmed != SUMMARY_END
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let normalized = normalized.trim();
+    (!normalized.is_empty()).then(|| normalized.to_string())
+}
+
+fn marker_line_start(text: &str, marker: &str) -> Option<usize> {
+    text.match_indices(marker).find_map(|(idx, _)| {
+        let line_start = text[..idx].rfind('\n').map_or(0, |newline| newline + 1);
+        text[line_start..idx]
+            .trim()
+            .is_empty()
+            .then_some(line_start)
+    })
+}
+
+fn strip_compaction_summary_text(text: &str) -> String {
+    const SUMMARY_BEGIN: &str = "<!-- compaction-summary:begin -->";
+    const SUMMARY_END: &str = "<!-- compaction-summary:end -->";
+
+    let mut base = if let Some(start) = text.find(SUMMARY_BEGIN) {
+        let end = text
+            .rfind(SUMMARY_END)
+            .filter(|end| *end >= start)
+            .map(|end| end + SUMMARY_END.len());
+        let mut stripped = text[..start].trim_end().to_string();
+        if let Some(end) = end {
+            let tail = text[end..].trim_start();
+            if !tail.is_empty() {
+                if !stripped.is_empty() {
+                    stripped.push_str("\n\n");
+                }
+                stripped.push_str(tail);
+            }
+        }
+        stripped
+    } else {
+        text.to_string()
+    };
+
+    if let Some(start) = marker_line_start(&base, COMPACTION_SUMMARY_HEADING)
+        .or_else(|| marker_line_start(&base, COMPACTION_SUMMARY_MARKER))
+    {
+        base.truncate(start);
+        base = trim_legacy_summary_separator(&base);
+    }
+    base.trim_end().to_string()
+}
+
+fn trim_legacy_summary_separator(text: &str) -> String {
+    let trimmed = text.trim_end();
+    trimmed
+        .strip_suffix("---")
+        .map_or(trimmed, str::trim_end)
+        .to_string()
 }
 
 #[allow(dead_code)] // exposed for future engine-side callers; current call path goes through compaction::estimate_input_tokens_conservative via token_estimate_cache.

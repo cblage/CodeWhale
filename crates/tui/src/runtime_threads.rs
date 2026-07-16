@@ -62,6 +62,7 @@ const SUMMARY_LIMIT: usize = 280;
 /// should preserve this section verbatim or the summary is lost on reload.
 const COMPACTION_SUMMARY_BEGIN: &str = "<!-- compaction-summary:begin -->";
 const COMPACTION_SUMMARY_END: &str = "<!-- compaction-summary:end -->";
+const COMPACTION_SUMMARY_HEADING: &str = "## 📋 Conversation Summary (Auto-Generated)";
 
 /// Merge a rendered compaction summary into a thread record's system prompt,
 /// replacing any previously persisted summary section.
@@ -81,23 +82,54 @@ fn merge_summary_into_prompt(base: Option<&str>, summary_text: &str) -> String {
 
 /// Remove a previously persisted compaction summary section, if present.
 fn strip_summary_section(base: &str) -> String {
-    let Some(start) = base.find(COMPACTION_SUMMARY_BEGIN) else {
-        return base.to_string();
-    };
-    let end = base[start..]
-        .find(COMPACTION_SUMMARY_END)
-        .map(|rel| start + rel + COMPACTION_SUMMARY_END.len());
-    let mut out = base[..start].trim_end().to_string();
-    if let Some(end) = end {
-        let tail = base[end..].trim_start();
-        if !tail.is_empty() {
-            if !out.is_empty() {
-                out.push_str("\n\n");
+    let mut out = if let Some(start) = base.find(COMPACTION_SUMMARY_BEGIN) {
+        let end = base
+            .rfind(COMPACTION_SUMMARY_END)
+            .filter(|end| *end >= start)
+            .map(|end| end + COMPACTION_SUMMARY_END.len());
+        let mut stripped = base[..start].trim_end().to_string();
+        if let Some(end) = end {
+            let tail = base[end..].trim_start();
+            if !tail.is_empty() {
+                if !stripped.is_empty() {
+                    stripped.push_str("\n\n");
+                }
+                stripped.push_str(tail);
             }
-            out.push_str(tail);
         }
+        stripped
+    } else {
+        base.to_string()
+    };
+
+    // Before runtime thread sentinels existed, saved sessions flattened the
+    // host prompt and all accumulated compaction blocks into one Text value.
+    // Remove that appended legacy suffix before writing the canonical section,
+    // otherwise the next compaction duplicates every old summary both outside
+    // and inside the sentinel pair.
+    if let Some(start) = marker_line_start(&out, COMPACTION_SUMMARY_HEADING) {
+        out.truncate(start);
+        out = trim_legacy_summary_separator(&out);
     }
-    out
+    out.trim_end().to_string()
+}
+
+fn marker_line_start(text: &str, marker: &str) -> Option<usize> {
+    text.match_indices(marker).find_map(|(idx, _)| {
+        let line_start = text[..idx].rfind('\n').map_or(0, |newline| newline + 1);
+        text[line_start..idx]
+            .trim()
+            .is_empty()
+            .then_some(line_start)
+    })
+}
+
+fn trim_legacy_summary_separator(text: &str) -> String {
+    let trimmed = text.trim_end();
+    trimmed
+        .strip_suffix("---")
+        .map_or(trimmed, str::trim_end)
+        .to_string()
 }
 
 fn validated_record_id<'a>(id: &'a str, label: &str) -> Result<&'a str> {

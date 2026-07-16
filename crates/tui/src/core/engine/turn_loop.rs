@@ -376,15 +376,14 @@ impl Engine {
                 .pinned_message_indices(&self.session.messages, &self.session.workspace);
             let compaction_paths = self.session.working_set.top_paths(24);
 
-            if self.config.compaction.enabled
-                && should_compact(
-                    &self.session.messages,
-                    &self.config.compaction,
-                    Some(&self.session.workspace),
-                    Some(&compaction_pins),
-                    Some(&compaction_paths),
-                )
-            {
+            if should_compact_request(
+                &self.session.messages,
+                self.session.system_prompt.as_ref(),
+                &self.config.compaction,
+                Some(&self.session.workspace),
+                Some(&compaction_pins),
+                Some(&compaction_paths),
+            ) {
                 let compaction_id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
                 self.emit_compaction_started(
                     compaction_id.clone(),
@@ -409,7 +408,11 @@ impl Engine {
                 {
                     Ok(result) => {
                         // Only update if we got valid messages (never corrupt state)
-                        if !result.messages.is_empty() || self.session.messages.is_empty() {
+                        if super::compaction_output_is_valid(
+                            result.messages.is_empty(),
+                            result.summary_prompt.is_some(),
+                            self.session.messages.is_empty(),
+                        ) {
                             let auto_messages_after = result.messages.len();
                             self.session.replace_messages(result.messages);
                             self.merge_compaction_summary(result.summary_prompt);
