@@ -3786,7 +3786,7 @@ impl ToolSpec for AgentTool {
                 "thinking": {
                     "type": "string",
                     "enum": ["inherit", "auto", "off", "low", "medium", "high", "max"],
-                    "description": "Optional child thinking budget. When omitted, a selected profile's reasoning_effort applies; otherwise the child inherits the parent/session tier, except that an unconfigured faster lane defaults to off (or low where off is unavailable). Explicit inherit always follows the parent/session tier, including on faster lanes. auto chooses from the child prompt. Explicit thinking overrides both the profile tier and the faster-lane default."
+                    "description": "Optional child thinking budget. When omitted, a selected profile's reasoning_effort applies; otherwise the child inherits the parent/session tier, except that model_strength=faster defaults to off (or low where off is unavailable) when no faster-lane thinking tier is configured. Explicit inherit always follows the parent/session tier, including with model_strength=faster. auto chooses from the child prompt. Explicit thinking overrides both the profile tier and the faster-lane default."
                 },
                 "cwd": {
                     "type": "string",
