@@ -1571,7 +1571,7 @@ async fn cancel_agent_run_endpoint_targets_active_thread_engine() -> Result<()> 
 }
 
 #[tokio::test]
-async fn nudge_agent_runs_endpoint_is_internal_coalesced_and_idle_safe() -> Result<()> {
+async fn nudge_agent_runs_endpoint_is_internal_coalesced_and_requires_active_turn() -> Result<()> {
     let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
         return Ok(());
     };
@@ -1674,24 +1674,14 @@ async fn nudge_agent_runs_endpoint_is_internal_coalesced_and_idle_safe() -> Resu
         .json(&json!({ "agent_ids": ["agent_idle"] }))
         .send()
         .await?;
-    assert_eq!(idle.status(), StatusCode::ACCEPTED);
-    let idle_body: Value = idle.json().await?;
-    assert_eq!(idle_body["accepted"], true);
-    assert_eq!(idle_body["coalesced"], false);
-    assert_eq!(idle_body["thread_id"], idle_thread_id);
-    assert_eq!(idle_body["agent_ids"], json!(["agent_idle"]));
-
-    match tokio::time::timeout(Duration::from_secs(1), idle_harness.rx_op.recv()).await {
-        Ok(Some(Op::SendMessage {
-            content,
-            provenance,
-            ..
-        })) => {
-            assert_eq!(provenance, crate::core::ops::UserInputProvenance::Runtime);
-            assert!(content.contains("kind=\"subagent_watchdog\""));
-        }
-        other => panic!("expected durable idle watchdog turn, got {other:?}"),
-    }
+    assert_eq!(idle.status(), StatusCode::CONFLICT);
+    assert!(idle.text().await?.contains("No active turn"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(75), idle_harness.rx_op.recv())
+            .await
+            .is_err(),
+        "idle watchdog nudge must not dispatch a model turn"
+    );
 
     handle.abort();
     Ok(())

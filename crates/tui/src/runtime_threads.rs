@@ -2986,48 +2986,6 @@ impl RuntimeThreadManager {
         Ok(())
     }
 
-    async fn dispatch_idle_watchdog_turn(
-        &self,
-        thread_id: &str,
-        agent_ids: &[String],
-        nudge_token: String,
-    ) -> Result<AgentRunNudgeResult> {
-        let prompt = subagent_watchdog_prompt(agent_ids);
-        let summary = format!(
-            "Sub-agent watchdog check ({} agent{})",
-            agent_ids.len(),
-            if agent_ids.len() == 1 { "" } else { "s" }
-        );
-        let prepared = self
-            .prepare_internal_turn(
-                thread_id,
-                "subagent_watchdog",
-                summary,
-                agent_ids,
-                UserInputProvenance::Runtime,
-                Some(nudge_token),
-                false,
-            )
-            .await?;
-
-        let turn_id = prepared.turn_id.clone();
-        self.dispatch_prepared_internal_turn(
-            prepared,
-            prompt,
-            UserInputProvenance::Runtime,
-            "subagent_watchdog",
-        )
-        .await?;
-
-        Ok(AgentRunNudgeResult {
-            accepted: true,
-            coalesced: false,
-            thread_id: thread_id.to_string(),
-            turn_id,
-            agent_ids: agent_ids.to_vec(),
-        })
-    }
-
     /// Ask an already-loaded thread engine to cancel one of its sub-agents.
     ///
     /// This deliberately does not call `ensure_engine_loaded`: live sub-agent
@@ -3060,9 +3018,8 @@ impl RuntimeThreadManager {
 
     /// Queue a non-authoritative watchdog nudge into the parent thread.
     ///
-    /// Busy parents receive the nudge out-of-band. Idle parents get a durable
-    /// internal Runtime turn first, so its monitor is attached before the
-    /// engine emits any adjudication output.
+    /// Active parents receive the nudge out-of-band. An idle parent is never
+    /// allowed to turn a periodic watchdog tick into a new model call.
     pub async fn nudge_sub_agents(
         &self,
         thread_id: &str,
@@ -3071,13 +3028,17 @@ impl RuntimeThreadManager {
         let agent_ids = normalize_agent_nudge_ids(agent_ids)?;
         let nudge_token = format!("nudge_{}", &Uuid::new_v4().to_string()[..8]);
 
-        let active_target = {
+        let (engine, turn_id) = {
             let mut active = self.active.lock().await;
-            let active_thread = active
-                .engines
-                .get_mut(thread_id)
-                .ok_or_else(|| anyhow!("Thread {thread_id} is not active"))?;
-            let target = if let Some(active_turn) = active_thread.active_turn.as_mut() {
+            let target = {
+                let active_thread = active
+                    .engines
+                    .get_mut(thread_id)
+                    .ok_or_else(|| anyhow!("No active turn for thread {thread_id}"))?;
+                let active_turn = active_thread
+                    .active_turn
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("No active turn for thread {thread_id}"))?;
                 if active_turn.pending_agent_nudge.is_some() {
                     return Ok(AgentRunNudgeResult {
                         accepted: false,
@@ -3088,18 +3049,10 @@ impl RuntimeThreadManager {
                     });
                 }
                 active_turn.pending_agent_nudge = Some(nudge_token.clone());
-                Some((active_thread.engine.clone(), active_turn.turn_id.clone()))
-            } else {
-                None
+                (active_thread.engine.clone(), active_turn.turn_id.clone())
             };
             touch_lru(&mut active.lru, thread_id);
             target
-        };
-
-        let Some((engine, turn_id)) = active_target else {
-            return self
-                .dispatch_idle_watchdog_turn(thread_id, &agent_ids, nudge_token)
-                .await;
         };
 
         let applied_rx = match engine

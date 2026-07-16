@@ -685,9 +685,9 @@ The watchdog nudge body is `{ "agent_ids": ["agent_...", ...] }`. IDs are
 validated, sorted, and deduplicated; at least one is required. The runtime
 constructs the fixed internal watchdog prompt itself, injects it with
 non-authoritative `runtime` provenance, and records an internal status item
-rather than a user-message item. Busy turns emit `turn.nudged`; idle parents
-instead emit a new internal `turn.started` before dispatch. A queued nudge
-returns HTTP `202`:
+rather than a user-message item. An active turn emits `turn.nudged`; an idle
+parent returns HTTP `409` with an error containing `No active turn` and does not
+dispatch a model request. A queued nudge returns HTTP `202`:
 
 ```json
 {
@@ -701,10 +701,7 @@ returns HTTP `202`:
 
 If an earlier watchdog nudge is still waiting to enter the same active turn,
 the route returns the same shape with `accepted: false` and `coalesced: true`.
-For an idle parent, the runtime first persists a hidden internal turn, attaches
-its event monitor, and only then dispatches the watchdog prompt. The response is
-the same HTTP `202` shape with that new `turn_id`. Root sub-agent completions use
-the same durable ordering automatically: `turn.started` carries
+Root sub-agent completions use durable ordering automatically: `turn.started` carries
 `source: "subagent_completion"`, `internal: true`, and the exact `agent_ids`
 before any engine output for the adjudication turn. Detect the optional watchdog
 surface through `GET /v1/runtime/info` at `experimental.agent_run_nudge`; older

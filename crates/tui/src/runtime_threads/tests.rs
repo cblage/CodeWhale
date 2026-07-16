@@ -1727,7 +1727,7 @@ async fn agent_nudge_is_runtime_input_status_only_and_coalesces_pending_requests
 }
 
 #[tokio::test]
-async fn agent_nudge_on_idle_parent_creates_durable_runtime_turn() -> Result<()> {
+async fn agent_nudge_on_idle_parent_returns_error_without_dispatch() -> Result<()> {
     let manager = test_manager(test_runtime_dir())?;
     let thread = manager
         .create_thread(CreateThreadRequest {
@@ -1737,122 +1737,25 @@ async fn agent_nudge_on_idle_parent_creates_durable_runtime_turn() -> Result<()>
         .await?;
     let mut harness = install_mock_engine(&manager, &thread.id).await;
 
-    let result = manager
-        .nudge_sub_agents(&thread.id, vec!["agent_idle".to_string()])
-        .await?;
-    assert!(result.accepted);
-    assert!(!result.coalesced);
-
-    let op = tokio::time::timeout(Duration::from_secs(1), harness.rx_op.recv())
-        .await?
-        .context("missing idle watchdog turn op")?;
-    match op {
-        Op::SendMessage {
-            content,
-            provenance,
-            ..
-        } => {
-            assert_eq!(provenance, UserInputProvenance::Runtime);
-            assert!(content.contains("kind=\"subagent_watchdog\""));
-            assert!(content.contains("agent_idle"));
-        }
-        other => panic!("expected idle watchdog SendMessage, got {other:?}"),
-    }
-
-    let stored = manager.store.load_turn(&result.turn_id)?;
-    assert_eq!(stored.status, RuntimeTurnStatus::InProgress);
-    assert_eq!(
-        manager.active_turn_id(&thread.id).await.as_deref(),
-        Some(result.turn_id.as_str())
-    );
-    let status_item = manager.store.load_item(&stored.item_ids[0])?;
-    assert_eq!(status_item.kind, TurnItemKind::Status);
-    assert_eq!(
-        status_item
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("source"))
-            .and_then(Value::as_str),
-        Some("subagent_watchdog")
-    );
-    assert_eq!(
-        status_item
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("internal"))
-            .and_then(Value::as_bool),
-        Some(true)
-    );
-
-    harness
-        .tx_event
-        .send(EngineEvent::TurnStarted {
-            turn_id: "engine_idle_watchdog".to_string(),
-        })
-        .await?;
-    harness
-        .tx_event
-        .send(EngineEvent::MessageStarted { index: 0 })
-        .await?;
-    harness
-        .tx_event
-        .send(EngineEvent::MessageDelta {
-            index: 0,
-            content: "Agents checked and adjudicated.".to_string(),
-        })
-        .await?;
-    harness
-        .tx_event
-        .send(EngineEvent::MessageComplete { index: 0 })
-        .await?;
-    harness
-        .tx_event
-        .send(EngineEvent::TurnComplete {
-            usage: Usage::default(),
-            status: TurnOutcomeStatus::Completed,
-            error: None,
-            tool_catalog: None,
-            base_url: None,
-        })
-        .await?;
-
-    let completed =
-        wait_for_terminal_turn(&manager, &result.turn_id, Duration::from_secs(2)).await?;
-    assert_eq!(completed.status, RuntimeTurnStatus::Completed);
-    assert_eq!(manager.active_turn_id(&thread.id).await, None);
-    assert!(manager.events_since(&thread.id, None)?.iter().any(|event| {
-        event.event == "turn.started"
-            && event.payload.get("source").and_then(Value::as_str) == Some("subagent_watchdog")
-    }));
-    Ok(())
-}
-
-#[tokio::test]
-async fn idle_internal_turn_dispatch_failure_is_terminal_and_releases_thread() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            workspace: None,
-            ..Default::default()
-        })
-        .await?;
-    let harness = install_mock_engine(&manager, &thread.id).await;
-    drop(harness.rx_op);
-
     let err = manager
-        .nudge_sub_agents(&thread.id, vec!["agent_closed".to_string()])
+        .nudge_sub_agents(&thread.id, vec!["agent_idle".to_string()])
         .await
-        .expect_err("closed engine must reject internal turn dispatch");
-    assert!(format!("{err:#}").contains("engine closed"));
-
-    let updated_thread = manager.get_thread(&thread.id).await?;
-    let turn_id = updated_thread
-        .latest_turn_id
-        .context("failed internal turn was not persisted")?;
-    let turn = manager.store.load_turn(&turn_id)?;
-    assert_eq!(turn.status, RuntimeTurnStatus::Failed);
-    assert!(turn.ended_at.is_some());
+        .expect_err("idle watchdog nudge must be rejected");
+    assert!(format!("{err:#}").contains("No active turn"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(75), harness.rx_op.recv())
+            .await
+            .is_err(),
+        "idle watchdog nudge must not dispatch a model turn"
+    );
     assert_eq!(manager.active_turn_id(&thread.id).await, None);
+    assert!(
+        manager
+            .get_thread(&thread.id)
+            .await?
+            .latest_turn_id
+            .is_none()
+    );
     Ok(())
 }
 
