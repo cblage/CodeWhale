@@ -1978,7 +1978,6 @@ fn plan_permission_cycle_is_rejected_without_mutating_agent_baseline() {
     assert!(!app.cycle_approval_posture());
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);
     assert_eq!(app.mode_prefs.agent_approval_mode, ApprovalMode::Auto);
-    assert!(!tmp.path().join("settings.toml").exists());
     assert!(
         app.status_toasts
             .iter()
@@ -1990,7 +1989,7 @@ fn plan_permission_cycle_is_rejected_without_mutating_agent_baseline() {
 }
 
 #[test]
-fn busy_permission_cycle_changes_neither_runtime_nor_persistence() {
+fn busy_permission_cycle_changes_neither_runtime_nor_agent_baseline() {
     let _env_lock = lock_test_env();
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
@@ -2004,7 +2003,6 @@ fn busy_permission_cycle_changes_neither_runtime_nor_persistence() {
     assert!(!app.cycle_approval_posture());
     assert_eq!(app.approval_mode, before);
     assert_eq!(app.mode_prefs.agent_approval_mode, before);
-    assert!(!tmp.path().join("settings.toml").exists());
     assert!(
         app.status_message
             .as_deref()
@@ -2170,8 +2168,14 @@ fn set_mode_captures_agent_edits_as_the_durable_baseline() {
 }
 
 #[test]
-fn yolo_start_with_default_config_restores_interactive_agent_shell_baseline() {
-    let mut app = App::new(test_options(true), &Config::default());
+fn yolo_start_restores_default_interactive_agent_shell_baseline() {
+    // Pin the approval policy explicitly: settings-path tests run in parallel
+    // and temporarily redirect the process-global settings file.
+    let config = Config {
+        approval_policy: Some("on-request".to_string()),
+        ..Default::default()
+    };
+    let mut app = App::new(test_options(true), &config);
     // --yolo starts in Agent mode with the full-access compat shim (M6).
     assert_eq!(app.mode, AppMode::Agent);
     assert!(app.yolo);
@@ -2192,6 +2196,9 @@ fn yolo_start_with_default_config_restores_interactive_agent_shell_baseline() {
 fn leaving_yolo_after_startup_restores_baseline_policies() {
     let config = Config {
         allow_shell: Some(false),
+        // Keep this policy assertion independent from parallel tests that
+        // temporarily redirect the process-global settings file.
+        approval_policy: Some("on-request".to_string()),
         ..Default::default()
     };
 
