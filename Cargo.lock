@@ -1031,7 +1031,7 @@ dependencies = [
 
 [[package]]
 name = "codewhale-tui"
-version = "0.1337.8"
+version = "0.1337.10"
 dependencies = [
  "ahash",
  "anyhow",

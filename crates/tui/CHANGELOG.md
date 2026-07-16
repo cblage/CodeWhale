@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1337.10] - 2026-07-15
+
+### Fixed
+
+- Exclude synthetic `<turn_meta>` blocks from compaction pinning and summary
+  inputs, and discard redundant watchdog/waiting runtime events instead of
+  preserving them as conversation context.
+- Restore only the sentinel-delimited compaction summary after a runtime
+  reload, preventing the host system prompt from being duplicated into each
+  later summary.
+- Sample local fleet-worker RSS through native macOS `proc_pidinfo` or Linux
+  `/proc` instead of relying on a sandbox-blocked `ps` subprocess.
+- Probe macOS Vision before advertising native OCR, preserving the Tesseract
+  fallback when a host sandbox blocks Vision requests.
+- Document the literal `model_strength=faster` child-thinking control in the
+  agent tool schema.
+
+## [0.1337.9] - 2026-07-15
+
+### Fixed
+
+- Reject agent-watchdog nudges when the parent has no active turn, preventing
+  periodic checks from creating autonomous model calls.
+- Trigger automatic compaction from the same conservative full-request token
+  estimate shown by context telemetry, while requiring compactable history to
+  avoid no-op compaction loops.
+
 ## [0.1337.8] - 2026-07-14
 
 ### Changed

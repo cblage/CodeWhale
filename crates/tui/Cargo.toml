@@ -1,6 +1,6 @@
 [package]
 name = "codewhale-tui"
-version = "0.1337.8"
+version = "0.1337.10"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
