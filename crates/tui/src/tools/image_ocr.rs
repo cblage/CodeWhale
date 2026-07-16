@@ -72,8 +72,10 @@ pub(crate) fn ocr_available() -> bool {
 }
 
 pub(crate) fn ocr_image_path(image_path: &Path) -> Result<String, ToolError> {
-    if let Some(text) = try_native_ocr(image_path)? {
-        return Ok(text);
+    if native_ocr_available() {
+        if let Some(text) = try_native_ocr(image_path)? {
+            return Ok(text);
+        }
     }
 
     if let Some(tesseract) = crate::dependencies::resolve_tesseract() {
@@ -81,7 +83,7 @@ pub(crate) fn ocr_image_path(image_path: &Path) -> Result<String, ToolError> {
     }
 
     Err(ToolError::execution_failed(
-        "image_ocr: no local OCR backend is available. On macOS, update to a version with the Vision framework; on Linux/Windows install tesseract and restart codewhale.",
+        "image_ocr: no usable local OCR backend is available. On macOS, Vision may be unavailable to this process (for example under a host sandbox); install tesseract or allow Vision access. On Linux/Windows install tesseract and restart codewhale.",
     ))
 }
 
@@ -116,7 +118,46 @@ fn ocr_with_tesseract(tesseract: &str, image_path: &Path) -> Result<String, Tool
 
 #[cfg(target_os = "macos")]
 fn native_ocr_available() -> bool {
-    true
+    use std::sync::OnceLock;
+
+    static NATIVE_OCR_AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *NATIVE_OCR_AVAILABLE.get_or_init(probe_native_ocr)
+}
+
+/// Verify that Vision can execute in this process, rather than assuming that
+/// linking the framework makes it usable. In particular, a process already
+/// running inside a managed macOS Seatbelt may resolve all Vision classes but
+/// still be denied when `performRequests:error:` contacts the system service.
+#[cfg(target_os = "macos")]
+fn probe_native_ocr() -> bool {
+    let mut probe_file = match tempfile::Builder::new()
+        .prefix("codewhale-vision-probe-")
+        .suffix(".png")
+        .tempfile()
+    {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::debug!(%error, "macOS Vision OCR probe could not create its image");
+            return false;
+        }
+    };
+
+    // Use a representative screenshot-sized surface. Extremely small images
+    // can be rejected as unsuitable even when the Vision service is usable.
+    let probe_image =
+        image::DynamicImage::ImageLuma8(image::GrayImage::from_pixel(300, 100, image::Luma([255])));
+    if let Err(error) = probe_image.write_to(probe_file.as_file_mut(), image::ImageFormat::Png) {
+        tracing::debug!(%error, "macOS Vision OCR probe could not encode its image");
+        return false;
+    }
+
+    match macos_vision::recognize_text(probe_file.path()) {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::debug!(%error, "macOS Vision OCR is unavailable to this process");
+            false
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

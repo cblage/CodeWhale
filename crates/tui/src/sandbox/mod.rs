@@ -851,8 +851,13 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn test_parity_macos_seatbelt_available() {
+        let available = seatbelt::is_available();
         let st = get_platform_sandbox();
-        assert!(matches!(st, Some(SandboxType::MacosSeatbelt)));
+        assert_eq!(
+            matches!(st, Some(SandboxType::MacosSeatbelt)),
+            available,
+            "platform detection must reflect whether sandbox-exec can actually apply a profile"
+        );
     }
 
     #[test]

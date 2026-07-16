@@ -662,7 +662,54 @@ fn status_from_exit(
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
+fn sample_process_memory_mb(pid: u32) -> Option<u64> {
+    use std::mem::{MaybeUninit, size_of};
+
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let buffer_size = libc::c_int::try_from(size_of::<libc::proc_taskinfo>()).ok()?;
+    let mut info = MaybeUninit::<libc::proc_taskinfo>::zeroed();
+
+    // SAFETY: `info` points to a writable `proc_taskinfo` buffer whose exact
+    // size is passed to libproc. We only assume initialization when libproc
+    // reports that it filled the complete structure.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTASKINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            buffer_size,
+        )
+    };
+    if written != buffer_size {
+        return None;
+    }
+
+    // SAFETY: the complete structure was initialized by `proc_pidinfo` above.
+    let rss_bytes = unsafe { info.assume_init() }.pti_resident_size;
+    (rss_bytes > 0).then_some(rss_bytes.div_ceil(1024 * 1024))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn sample_process_memory_mb(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let rss_line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    let mut fields = rss_line.split_ascii_whitespace();
+    if fields.next()? != "VmRSS:" {
+        return None;
+    }
+    let rss_kb = fields.next()?.parse::<u64>().ok()?;
+    if fields.next()? != "kB" {
+        return None;
+    }
+    (rss_kb > 0).then_some(rss_kb.div_ceil(1024))
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "linux", target_os = "android"))
+))]
 fn sample_process_memory_mb(pid: u32) -> Option<u64> {
     // Resolve `ps` via PATH like every other external command in the
     // codebase: /bin/ps does not exist on NixOS and some minimal containers,

@@ -99,6 +99,18 @@ fn echo_stdin_command() -> String {
     }
 }
 
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn host_sandbox_denies_dev_tty() -> bool {
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+    {
+        Err(error) => error.kind() == std::io::ErrorKind::PermissionDenied,
+        Ok(_) => false,
+    }
+}
+
 fn network_restricted_context(tmp: &std::path::Path) -> ToolContext {
     ToolContext::new(tmp)
         .with_elevated_sandbox_policy(ExecutionSandboxPolicy::WorkspaceWrite {
@@ -645,6 +657,14 @@ fn test_write_stdin_streams_output() {
 #[test]
 #[cfg(all(unix, not(target_env = "ohos")))]
 fn background_tty_command_has_controlling_terminal() {
+    // A nested managed sandbox can explicitly deny /dev/tty even though
+    // portable-pty itself is functioning. Only skip that concrete host
+    // capability denial; ENXIO/no-parent-TTY still exercises the child PTY,
+    // and any failure after an allowed probe remains a real regression.
+    if host_sandbox_denies_dev_tty() {
+        return;
+    }
+
     let tmp = tempdir().expect("tempdir");
     let mut manager = ShellManager::new(tmp.path().to_path_buf());
 
